@@ -3,6 +3,22 @@
   "name": "RevOps Signal Orchestration",
   "nodes": [
     {
+      "id": "backend-event-trigger",
+      "name": "RevOps: Backend Event Trigger",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        0,
+        360
+      ],
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "agentflow-revops-signals",
+        "responseMode": "onReceived",
+        "options": {}
+      }
+    },
+    {
       "id": "manual-trigger",
       "name": "RevOps: Manual Trigger",
       "type": "n8n-nodes-base.manualTrigger",
@@ -427,6 +443,17 @@
     }
   ],
   "connections": {
+    "RevOps: Backend Event Trigger": {
+      "main": [
+        [
+          {
+            "node": "RevOps: Dynamic Signal Scope",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
     "RevOps: Manual Trigger": {
       "main": [
         [

@@ -51,3 +51,5 @@ The backend reuses the existing GTM/RevOps Supabase project. This repository doe
 ## Status
 
 Phase 4 completes the backend intelligence platform while retaining migrated workflows and Supabase contracts as the source of truth. See `docs/business-engines.md`, `docs/signal-catalogue.md`, and `docs/workflow-catalogue.md`.
+
+The final integration boundary is documented in `docs/agentflow-integration.md`. Start the local event receiver with `pnpm start:events`.

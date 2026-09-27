@@ -4,11 +4,11 @@
 
 Webhook-driven sanitation, idempotent creation, anti-abuse, verification, enrichment, jurisdiction, AI scoring, qualification, routing, outreach or nurture, CRM preparation, and audit events.
 
-## Reply to Deal (`pre-crm.reply-to-deal`, v1.2.0)
+## Reply to Deal (`pre-crm.reply-to-deal`, v1.3.0)
 
 Scheduled reply detection, qualification refresh, contact and deal synchronization, routing synchronization, and Slack notification.
 
-## RevOps Signal Orchestration (`revops.signal-orchestration`, v1.2.0)
+## RevOps Signal Orchestration (`revops.signal-orchestration`, v1.3.0)
 
 Scheduled or internal-event generation of persisted RevOps signals followed by idempotent CRM and Slack handling.
 

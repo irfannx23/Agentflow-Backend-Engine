@@ -19,7 +19,7 @@ export const TRIGGER_DEFINITIONS = [
     inputs: [{ name: 'request', type: 'object', required: true, description: 'Inbound HTTP request.' }],
     outputs: [eventOutput],
     validation: ['path must be unique', 'method must be allowlisted', 'payload size must be bounded'],
-    supportedWorkflows: ['pre-crm.lead-qualification'],
+    supportedWorkflows: ['pre-crm.lead-qualification', 'pre-crm.reply-to-deal', 'revops.signal-orchestration'],
   },
   {
     id: 'cron',

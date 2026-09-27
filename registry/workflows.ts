@@ -63,7 +63,7 @@ export const WORKFLOW_DEFINITIONS = [
     name: 'Reply to Deal',
     category: 'pre-crm',
     description: 'Detect replied outreach, refresh qualification, create a CRM deal, and notify the assigned team.',
-    version: '1.2.0', triggerTypes: ['cron'], supportedIntegrations: ['supabase', 'hubspot', 'slack'],
+    version: '1.3.0', triggerTypes: ['cron', 'webhook'], supportedIntegrations: ['supabase', 'hubspot', 'slack'],
     requiredCredentials: [
       { id: 'supabase-service', name: 'Supabase Service Credential', integrationId: 'supabase', authentication: 'bearer', configuredAtRuntime: true },
       { id: 'hubspot', name: 'HubSpot Connection', integrationId: 'hubspot', authentication: 'bearer', configuredAtRuntime: true },
@@ -83,7 +83,7 @@ export const WORKFLOW_DEFINITIONS = [
     name: 'RevOps Signal Orchestration',
     category: 'revops',
     description: 'Generate persisted revenue signals and coordinate idempotent CRM and Slack outcomes.',
-    version: '1.2.0', triggerTypes: ['cron', 'internal-event'], supportedIntegrations: ['supabase', 'hubspot', 'slack'],
+    version: '1.3.0', triggerTypes: ['cron', 'internal-event', 'webhook'], supportedIntegrations: ['supabase', 'hubspot', 'slack'],
     requiredCredentials: [
       { id: 'supabase-service', name: 'Supabase Service Credential', integrationId: 'supabase', authentication: 'bearer', configuredAtRuntime: true },
       { id: 'hubspot', name: 'HubSpot Connection', integrationId: 'hubspot', authentication: 'bearer', configuredAtRuntime: true },

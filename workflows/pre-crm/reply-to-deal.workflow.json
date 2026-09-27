@@ -2,6 +2,22 @@
   "name": "Pre-CRM Reply → Deal (outbound) — every 15 min",
   "nodes": [
     {
+      "id": "backend-event-trigger",
+      "name": "Reply Cron: Backend Event Trigger",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        0,
+        180
+      ],
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "agentflow-reply-to-deal",
+        "responseMode": "onReceived",
+        "options": {}
+      }
+    },
+    {
       "id": "sched-reply-cron",
       "name": "Reply Cron: Every 15 min",
       "type": "n8n-nodes-base.scheduleTrigger",
@@ -255,6 +271,17 @@
     }
   ],
   "connections": {
+    "Reply Cron: Backend Event Trigger": {
+      "main": [
+        [
+          {
+            "node": "Reply Cron: Get Replied",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
     "Reply Cron: Every 15 min": {
       "main": [
         [
