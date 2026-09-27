@@ -1,0 +1,376 @@
+{
+  "name": "Pre-CRM Reply → Deal (outbound) — every 15 min",
+  "nodes": [
+    {
+      "id": "sched-reply-cron",
+      "name": "Reply Cron: Every 15 min",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        0,
+        0
+      ],
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "minutes",
+              "minutesInterval": 15
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "rpc-get-replied",
+      "name": "Reply Cron: Get Replied",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 2,
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000,
+      "position": [
+        220,
+        0
+      ],
+      "parameters": {
+        "url": "={{ $env.SUPABASE_URL + '/rest/v1/rpc/get_replied_outreach' }}",
+        "requestMethod": "POST",
+        "jsonParameters": true,
+        "headerParametersJson": "={{ JSON.stringify({ apikey: $env.SUPABASE_SERVICE_ROLE_KEY, Authorization: 'Bearer ' + $env.SUPABASE_SERVICE_ROLE_KEY }) }}",
+        "bodyParametersJson": "={{ JSON.stringify({ p_limit: 10 }) }}",
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "json"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "code-split-replied",
+      "name": "Reply Cron: Split Rows",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        440,
+        0
+      ],
+      "parameters": {
+        "jsCode": "// Reply->Deal cron (n8n workflow id=2): split the get_replied_outreach RPC\n// result ({ok: true, rows: [...]}) into one item per replied row so the\n// downstream HubSpot nodes run per row. Zero rows -> [] ends the branch\n// silently (nothing to do this tick) — the n8n zero-item behaviour IS the\n// desired no-op here, so no IF node is needed.\n\n  const payload = Array.isArray($json)\n    ? (Array.isArray($json[0]) ? ($json[0][0] || {}) : ($json[0] || {}))\n    : ($json || {});\n  const rows = Array.isArray(payload.rows) ? payload.rows : [];\n  if (!rows.length) return [];\n  return rows.map((r) => ({ json: r }));\n"
+      }
+    },
+    {
+      "id": "hs-get-contact",
+      "name": "Reply Cron: Get Contact",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 2,
+      "position": [
+        660,
+        0
+      ],
+      "parameters": {
+        "url": "={{ $env.HUBSPOT_BASE_URL + '/crm/v3/objects/contacts?&idProperty=email' }}",
+        "requestMethod": "POST",
+        "jsonParameters": true,
+        "headerParametersJson": "={{ JSON.stringify({ Authorization: 'Bearer ' + $env.HUBSPOT_ACCESS_TOKEN }) }}",
+        "bodyParametersJson": "={{ JSON.stringify({ properties: { email: $json.email, company: $json.company_name || '' } }) }}",
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "json"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "hs-create-deal",
+      "name": "Reply Cron: Create Deal",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 2,
+      "position": [
+        880,
+        0
+      ],
+      "parameters": {
+        "url": "={{ $env.HUBSPOT_BASE_URL + '/crm/v3/objects/deals' }}",
+        "requestMethod": "POST",
+        "jsonParameters": true,
+        "headerParametersJson": "={{ JSON.stringify({ Authorization: 'Bearer ' + $env.HUBSPOT_ACCESS_TOKEN }) }}",
+        "bodyParametersJson": "={{ JSON.stringify({ properties: { dealname: 'Outbound Reply — ' + ($('Reply Cron: Split Rows').first().json.company_name || $('Reply Cron: Split Rows').first().json.email), amount: '0', pipeline: 'default', dealstage: 'appointmentscheduled' }, associations: [{ types: [{ associationCategory: 'HUBSPOT_DEFINED', associationTypeId: 3 }], to: { id: $json.id } }] }) }}",
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "json"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "rpc-mark-deal",
+      "name": "Reply Cron: Mark Deal Created",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 2,
+      "position": [
+        1100,
+        0
+      ],
+      "parameters": {
+        "url": "={{ $env.SUPABASE_URL + '/rest/v1/rpc/mark_deal_created' }}",
+        "requestMethod": "POST",
+        "jsonParameters": true,
+        "headerParametersJson": "={{ JSON.stringify({ apikey: $env.SUPABASE_SERVICE_ROLE_KEY, Authorization: 'Bearer ' + $env.SUPABASE_SERVICE_ROLE_KEY }) }}",
+        "bodyParametersJson": "={{ JSON.stringify({ p_id: $('Reply Cron: Split Rows').first().json.id, p_deal_id: $json.id }) }}",
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "json"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "rpc-evaluate-deal",
+      "name": "Reply Cron: Evaluate Qualification",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 2,
+      "position": [
+        1320,
+        0
+      ],
+      "parameters": {
+        "url": "={{ $env.SUPABASE_URL + '/rest/v1/rpc/evaluate_lead_qualification' }}",
+        "requestMethod": "POST",
+        "jsonParameters": true,
+        "headerParametersJson": "={{ JSON.stringify({ apikey: $env.SUPABASE_SERVICE_ROLE_KEY, Authorization: 'Bearer ' + $env.SUPABASE_SERVICE_ROLE_KEY }) }}",
+        "bodyParametersJson": "={{ JSON.stringify({ p_lead_id: $('Reply Cron: Split Rows').first().json.lead_id, p_evaluation_type: 'deal_created', p_source_runtime: 'reply_deal_workflow' }) }}",
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "json"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "rpc-route-deal",
+      "name": "Reply Cron: Route Lead to Sales",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 2,
+      "position": [
+        1540,
+        0
+      ],
+      "parameters": {
+        "url": "={{ $env.SUPABASE_URL + '/rest/v1/rpc/route_lead_to_sales' }}",
+        "requestMethod": "POST",
+        "jsonParameters": true,
+        "headerParametersJson": "={{ JSON.stringify({ apikey: $env.SUPABASE_SERVICE_ROLE_KEY, Authorization: 'Bearer ' + $env.SUPABASE_SERVICE_ROLE_KEY }) }}",
+        "bodyParametersJson": "={{ JSON.stringify({ p_lead_id: $('Reply Cron: Split Rows').first().json.lead_id, p_trigger: 'reply_deal_handoff', p_force_reassign: false }) }}",
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "json"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "rpc-sync-deal-crm",
+      "name": "Reply Cron: Sales Sync CRM",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 2,
+      "position": [
+        1760,
+        0
+      ],
+      "parameters": {
+        "url": "={{ $env.SUPABASE_URL + '/rest/v1/rpc/update_sales_assignment_sync' }}",
+        "requestMethod": "POST",
+        "jsonParameters": true,
+        "headerParametersJson": "={{ JSON.stringify({ apikey: $env.SUPABASE_SERVICE_ROLE_KEY, Authorization: 'Bearer ' + $env.SUPABASE_SERVICE_ROLE_KEY }) }}",
+        "bodyParametersJson": "={{ JSON.stringify({ p_lead_id: $('Reply Cron: Split Rows').first().json.lead_id, p_crm_sync_status: 'synced', p_reason: 'reply_deal_crm_sync' }) }}",
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "json"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "slack-reply-deal",
+      "name": "Reply Cron: Slack Alert",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1980,
+        0
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.SLACK_WEBHOOK_URL }}",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ text: '🤝 REPLY → DEAL: ' + ($('Reply Cron: Split Rows').first().json.company_name || 'Unknown') + ' (' + $('Reply Cron: Split Rows').first().json.email + ') — deal ' + $('Reply Cron: Create Deal').first().json.id + '\\nOwner: ' + (($('Reply Cron: Route Lead to Sales').first().json.current_owner_type || 'unassigned').toUpperCase()) + ' · Priority: ' + ($('Reply Cron: Route Lead to Sales').first().json.priority_tier || 'low') + ' · Route: ' + ($('Reply Cron: Route Lead to Sales').first().json.routing_reason || 'n/a') }) }}",
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "text"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "rpc-sync-deal-slack",
+      "name": "Reply Cron: Sales Sync Slack",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 2,
+      "position": [
+        2200,
+        0
+      ],
+      "parameters": {
+        "url": "={{ $env.SUPABASE_URL + '/rest/v1/rpc/update_sales_assignment_sync' }}",
+        "requestMethod": "POST",
+        "jsonParameters": true,
+        "headerParametersJson": "={{ JSON.stringify({ apikey: $env.SUPABASE_SERVICE_ROLE_KEY, Authorization: 'Bearer ' + $env.SUPABASE_SERVICE_ROLE_KEY }) }}",
+        "bodyParametersJson": "={{ JSON.stringify({ p_lead_id: $('Reply Cron: Split Rows').first().json.lead_id, p_slack_sync_status: 'synced', p_reason: 'reply_deal_sales_alert' }) }}",
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "json"
+            }
+          }
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Reply Cron: Every 15 min": {
+      "main": [
+        [
+          {
+            "node": "Reply Cron: Get Replied",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Reply Cron: Get Replied": {
+      "main": [
+        [
+          {
+            "node": "Reply Cron: Split Rows",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Reply Cron: Split Rows": {
+      "main": [
+        [
+          {
+            "node": "Reply Cron: Get Contact",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Reply Cron: Get Contact": {
+      "main": [
+        [
+          {
+            "node": "Reply Cron: Create Deal",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Reply Cron: Create Deal": {
+      "main": [
+        [
+          {
+            "node": "Reply Cron: Mark Deal Created",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Reply Cron: Mark Deal Created": {
+      "main": [
+        [
+          {
+            "node": "Reply Cron: Evaluate Qualification",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Reply Cron: Evaluate Qualification": {
+      "main": [
+        [
+          {
+            "node": "Reply Cron: Route Lead to Sales",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Reply Cron: Route Lead to Sales": {
+      "main": [
+        [
+          {
+            "node": "Reply Cron: Sales Sync CRM",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Reply Cron: Sales Sync CRM": {
+      "main": [
+        [
+          {
+            "node": "Reply Cron: Slack Alert",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Reply Cron: Slack Alert": {
+      "main": [
+        [
+          {
+            "node": "Reply Cron: Sales Sync Slack",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "pinData": {},
+  "meta": {
+    "templateCredsSetupCompleted": true
+  }
+}

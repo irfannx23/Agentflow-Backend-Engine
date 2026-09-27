@@ -1,0 +1,37 @@
+<!DOCTYPE html>
+<html lang="en">
+<head><meta charset="utf-8"><title>Acme (JS-rendered)</title></head>
+<body>
+  <h1>Acme JS — team loads via script</h1>
+  <p>The contact list below does not exist in the static HTML — it is built
+     entirely at runtime by JavaScript. Emails are assembled from parts so no
+     address appears in the source either.</p>
+  <!-- Nothing but an empty container in the static markup. -->
+  <div id="team"></div>
+  <script>
+    (function () {
+      var team = [
+        { name: 'Maya Iyer', role: 'CEO', user: 'maya' },
+        { name: 'Leo Grant', role: 'Head of Sales', user: 'leo' },
+        { name: 'Nina Rao', role: 'RevOps Lead', user: 'nina' }
+      ];
+      var ul = document.createElement('ul');
+      team.forEach(function (p) {
+        var li = document.createElement('li');
+        var strong = document.createElement('strong');
+        strong.textContent = p.name;
+        var span = document.createElement('span');
+        span.textContent = ' — ' + p.role + ' — ';
+        var a = document.createElement('a');
+        a.href = 'mailto:' + p.user + '@acmejs' + '.' + 'example';
+        a.textContent = p.user + '@acmejs' + '.' + 'example';
+        li.appendChild(strong);
+        li.appendChild(span);
+        li.appendChild(a);
+        ul.appendChild(li);
+      });
+      document.getElementById('team').appendChild(ul);
+    })();
+  </script>
+</body>
+</html>

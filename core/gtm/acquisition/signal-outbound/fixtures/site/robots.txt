@@ -1,0 +1,3 @@
+# Allow all crawlers for the demo site.
+User-agent: *
+Allow: /

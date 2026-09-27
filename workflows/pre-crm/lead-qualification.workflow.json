@@ -1,0 +1,2324 @@
+{
+  "id": "1",
+  "name": "Pre-CRM Ingestion \u2014 Hookdeck \u2192 Sanitize \u2192 Gate \u2192 Verify \u2192 Enrich \u2192 Jurisdiction \u2192 AI Score \u2192 CRM/Slack",
+  "nodes": [
+    {
+      "id": "webhook-hookdeck",
+      "name": "Webhook - Hookdeck Ingest",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        0,
+        0
+      ],
+      "webhookId": "pre-crm-hookdeck-lead-ingest",
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "hookdeck-lead-ingest",
+        "responseMode": "onReceived",
+        "options": {
+          "responseHeaders": {
+            "entries": [
+              {
+                "name": "Content-Type",
+                "value": "application/json"
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "id": "webhook-outbound",
+      "name": "Webhook - Outbound Ingest",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        0,
+        200
+      ],
+      "webhookId": "pre-crm-outbound-lead-ingest",
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "outbound",
+        "responseMode": "onReceived",
+        "options": {
+          "responseHeaders": {
+            "entries": [
+              {
+                "name": "Content-Type",
+                "value": "application/json"
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "id": "code-anti-abuse",
+      "name": "Anti-Abuse Gate",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        320,
+        100
+      ],
+      "parameters": {
+        "jsCode": "/**\n * ============================================\n * n8n Code Node \u2014 Position 0: Anti-Abuse Gate\n * ============================================\n * Anti-bot / cost-protection gate. Runs BEFORE any paid/costly stage\n * (sanitize, verify, enrich, score), so a bot flood never burns Emailable\n * credits, Apollo quota, or Gemini tokens, and never backs up the queue.\n *\n * All checks are free (zero API calls):\n *   1. honeypot  \u2014 bots fill hidden fields; humans never see them\n *   2. too_fast  \u2014 a sub-second (or future) submitted_at is a bot, not a human\n *   3. ip_flood  \u2014 >30 leads from the same IP in 10 min (count passed in)\n *   4. daily_cap \u2014 circuit breaker: >500 leads/day pauses ALL + alerts (count passed in)\n *\n * The two DB-backed counts (ip_flood_count, daily_count) are fetched by\n * preceding HTTP RPC nodes and merged onto the item; this Code node stays pure.\n *\n * Outputs a single item: the lead unchanged + { abuse_gate, abuse_reason }.\n *   abuse_gate = 'pass' (continue) | 'drop' (record_abuse + end branch)\n * ============================================\n */\n\n/** Pure decision logic \u2014 unit-tested via scripts/test-anti-abuse.cjs. */\nfunction evaluateAntiAbuse(payload, counts) {\n  // 1. Honeypot\n  if (payload && payload.hp && String(payload.hp).trim() !== '') {\n    return { action: 'drop', reason: 'honeypot' };\n  }\n  // 2. Too-fast / future timestamp\n  if (payload && payload.submitted_at) {\n    const t = Date.parse(payload.submitted_at);\n    if (!isNaN(t)) {\n      const ageMs = Date.now() - t;\n      if (ageMs < 1000) return { action: 'drop', reason: 'too_fast' };\n    }\n  }\n  const ipFlood = counts && typeof counts.ipFloodCount === 'number' ? counts.ipFloodCount : 0;\n  const daily   = counts && typeof counts.dailyCount === 'number'   ? counts.dailyCount   : 0;\n  // 3. Per-IP flood\n  if (ipFlood >= 30) return { action: 'drop', reason: 'ip_flood' };\n  // 4. Daily circuit breaker\n  if (daily >= 500) return { action: 'drop', reason: 'daily_cap' };\n  return { action: 'pass', reason: null };\n}\n\n\n  // n8n webhook wraps the request as { headers, body, query, params } \u2014 unwrap\n  // so we always evaluate against the lead object (mirrors the sanitizer).\n  const raw = $json || {};\n  const lead = raw.body && typeof raw.body === 'object' ? raw.body : raw;\n  const payload =\n    lead && lead.raw_payload && typeof lead.raw_payload === 'object' ? lead.raw_payload : lead;\n  const counts = {\n    ipFloodCount: lead && typeof lead.ip_flood_count === 'number' ? lead.ip_flood_count : undefined,\n    dailyCount:   lead && typeof lead.daily_count === 'number'   ? lead.daily_count   : undefined,\n  };\n  const { action, reason } = evaluateAntiAbuse(payload, counts);\n  // Preserve the envelope for the sanitizer (which also unwraps .body).\n  return [{ ...$json, abuse_gate: action, abuse_reason: reason }];\n"
+      }
+    },
+    {
+      "id": "if-abuse-ok",
+      "name": "Abuse OK?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        640,
+        100
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "cond-abuse-ok",
+              "leftValue": "={{ $json.abuse_gate }}",
+              "rightValue": "pass",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ]
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "rpc-record-abuse",
+      "name": "Record Abuse",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 2,
+      "position": [
+        640,
+        420
+      ],
+      "parameters": {
+        "url": "={{ $env.SUPABASE_URL + '/rest/v1/rpc/record_abuse' }}",
+        "requestMethod": "POST",
+        "jsonParameters": true,
+        "headerParametersJson": "={{ JSON.stringify({ apikey: $env.SUPABASE_SERVICE_ROLE_KEY, Authorization: 'Bearer ' + $env.SUPABASE_SERVICE_ROLE_KEY }) }}",
+        "bodyParametersJson": "={{ JSON.stringify({ p_reason: $json.abuse_reason, p_ip: ($json.body && $json.body.ip) || $json.ip || null, p_email: ($json.body && $json.body.email) || $json.email || null, p_payload: ($json.body && $json.body.raw_payload) || $json.raw_payload || {} }) }}",
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "json"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "code-sanitize",
+      "name": "Sanitize Lead",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        960,
+        80
+      ],
+      "parameters": {
+        "jsCode": "/**\n * ============================================\n * n8n Code Node \u2014 Ingestion Sanitization\n * ============================================\n * Paste this into an n8n \"Code\" node (JavaScript mode).\n *\n * Purpose (Step 2: Ingestion Logic):\n *   1. Validate email domain format.\n *   2. Filter out temporary / disposable email providers\n *      (e.g. @tempmail.com, @mailinator.com, etc.).\n *   3. Strip malformed text string inputs from the incoming\n *      lead payload.\n *\n * Business rules (see .clinerules):\n *   * Sanitization: strip malformed text & personal domains\n *     (e.g. @gmail.com, @yahoo.com) before scoring.\n *   * Data privacy: use synthetic test payloads in dev.\n *\n * Input:  $input.first().json  (the inbound lead object)\n * Output: { json: { ...sanitizedLead, sanitized: true } }\n *         or { json: { ...lead, sanitized: false, reason } }\n *         when the lead is rejected.\n * ============================================\n */\n\n// Disposable / temporary email domains to block outright.\nconst TEMP_EMAIL_DOMAINS = new Set([\n  'tempmail.com',\n  'mailinator.com',\n  'guerrillamail.com',\n  '10minutemail.com',\n  'yopmail.com',\n  'throwawaymail.com',\n  'sharklasers.com',\n  'maildrop.cc',\n  'getnada.com',\n  'temp-mail.org',\n  'dispostable.com',\n  'mailnesia.com',\n  'trashmail.com',\n  'spamgourmet.com',\n  'mintemail.com',\n  'mailcatch.com',\n  'mytemp.email',\n  'tempinbox.com',\n  'fakeinbox.com',\n  'emailondeck.com',\n]);\n\n// Personal / consumer domains to strip before scoring.\nconst PERSONAL_DOMAINS = new Set([\n  'gmail.com',\n  'yahoo.com',\n  'yahoo.co.uk',\n  'hotmail.com',\n  'outlook.com',\n  'aol.com',\n  'icloud.com',\n  'me.com',\n  'protonmail.com',\n  'proton.me',\n  'zoho.com',\n  'gmx.com',\n  'mail.com',\n  'live.com',\n  'msn.com',\n]);\n\n// Student / academic domains to strip before scoring (anti-ICP Stage 5).\nconst STUDENT_DOMAINS = new Set([\n  'student.edu',\n  'university.edu',\n  'college.edu',\n  'academia.edu',\n  'students.edu',\n  'alumni.edu',\n  'edu',\n  'ac.uk',\n  'ac.in',\n  'edu.au',\n  'edu.cn',\n  'edu.sg',\n  'uni.edu',\n]);\n\n// Competitor / out-of-ICP company domains to block (anti-ICP Stage 5).\n// NOTE: keep this list current as the competitive set changes.\nconst COMPETITOR_DOMAINS = new Set([\n  'hubspot.com',\n  'salesforce.com',\n  'pipedrive.com',\n  'zoho.com',\n  'freshworks.com',\n  'intercom.com',\n  'drift.com',\n  'clearbit.com',\n  'clay.com',\n  'apollo.io',\n]);\n\n// Unsupported jurisdictions (anti-ICP Stage 5).\n// Country codes (ISO 3166-1 alpha-2) whose leads are auto-disqualified.\nconst BLOCKED_JURISDICTIONS = new Set([\n  'KP', // North Korea\n  'IR', // Iran\n  'CU', // Cuba\n  'SY', // Syria\n  'BY', // Belarus\n  'RU', // Russia\n  'VE', // Venezuela\n  'MM', // Myanmar\n  'SD', // Sudan\n  'ZW', // Zimbabwe\n]);\n\n// Common country names / aliases -> ISO code, so a payload carrying a country\n// NAME (e.g. \"Russia\", \"Russian Federation\") is blocked just like a code.\n// Keys are normalized: lowercase, letters/spaces only. Keep in sync with\n// n8n-jurisdiction-check.js (Stage 5 backstop node).\nconst COUNTRY_NAME_TO_CODE = {\n  'russia': 'RU',\n  'russian federation': 'RU',\n  'rf': 'RU',\n  'belarus': 'BY',\n  'belorussia': 'BY',\n  'iran': 'IR',\n  'islamic republic of iran': 'IR',\n  'persia': 'IR',\n  'north korea': 'KP',\n  'democratic peoples republic of korea': 'KP',\n  'dprk': 'KP',\n  'cuba': 'CU',\n  'syria': 'SY',\n  'syrian arab republic': 'SY',\n  'venezuela': 'VE',\n  'bolivarian republic of venezuela': 'VE',\n  'myanmar': 'MM',\n  'burma': 'MM',\n  'myanmar burma': 'MM',\n  'sudan': 'SD',\n  'zimbabwe': 'ZW',\n};\n\n/** Normalize a country name for lookup: lowercase, strip punctuation. */\nfunction normalizeCountryName(name) {\n  if (typeof name !== 'string') return '';\n  return name.toLowerCase().replace(/[^a-z ]/g, ' ').replace(/\\s+/g, ' ').trim();\n}\n\n/**\n * Resolve a country signal (ISO code and/or name) against the blocklist.\n * Returns { blocked, code } \u2014 code is the ISO alpha-2 code when blocked.\n */\nfunction resolveBlockedCountry(countryCode, countryName) {\n  if (typeof countryCode === 'string') {\n    const code = countryCode.trim().toUpperCase();\n    if (BLOCKED_JURISDICTIONS.has(code)) {\n      return { blocked: true, code };\n    }\n  }\n  const normalized = normalizeCountryName(countryName);\n  if (normalized && COUNTRY_NAME_TO_CODE[normalized]) {\n    const code = COUNTRY_NAME_TO_CODE[normalized];\n    if (BLOCKED_JURISDICTIONS.has(code)) {\n      return { blocked: true, code };\n    }\n  }\n  return { blocked: false, code: null };\n}\n\n// Basic RFC-ish email format check.\nconst EMAIL_REGEX = /^[^\\s@]+@[^\\s@]+\\.[^\\s@]{2,}$/;\n\n/**\n * Normalize a string: trim, collapse internal whitespace,\n * and strip control characters / malformed tokens.\n */\nfunction normalizeText(value) {\n  if (typeof value !== 'string') return value;\n  return value\n    .replace(/[\\u0000-\\u001F\\u007F]/g, ' ') // control chars\n    .replace(/\\s+/g, ' ')                    // collapse whitespace\n    .trim();\n}\n\n/**\n * Validate and sanitize an email address.\n * Returns { ok, email, domain, reason }.\n */\nfunction sanitizeEmail(email) {\n  if (typeof email !== 'string') {\n    return { ok: false, email: null, domain: null, reason: 'email_missing' };\n  }\n\n  const cleaned = email.trim().toLowerCase();\n  if (!EMAIL_REGEX.test(cleaned)) {\n    return { ok: false, email: null, domain: null, reason: 'email_invalid_format' };\n  }\n\n  const domain = cleaned.split('@')[1].toLowerCase();\n\n  if (TEMP_EMAIL_DOMAINS.has(domain)) {\n    return { ok: false, email: cleaned, domain, reason: 'temporary_email_provider' };\n  }\n\n  if (PERSONAL_DOMAINS.has(domain)) {\n    return { ok: false, email: cleaned, domain, reason: 'personal_domain' };\n  }\n\n  // Anti-ICP Stage 5 hard exclusions.\n  if (STUDENT_DOMAINS.has(domain) || domain.endsWith('.edu')) {\n    return { ok: false, email: cleaned, domain, reason: 'student_domain' };\n  }\n\n  if (COMPETITOR_DOMAINS.has(domain)) {\n    return { ok: false, email: cleaned, domain, reason: 'competitor_domain' };\n  }\n\n  return { ok: true, email: cleaned, domain, reason: null };\n}\n\n/**\n * Recursively strip malformed text from string fields in the\n * payload, preserving structure of nested objects/arrays.\n */\nfunction stripMalformedText(value) {\n  if (typeof value === 'string') {\n    return normalizeText(value);\n  }\n  if (Array.isArray(value)) {\n    return value.map(stripMalformedText);\n  }\n  if (value && typeof value === 'object') {\n    const out = {};\n    for (const key of Object.keys(value)) {\n      out[key] = stripMalformedText(value[key]);\n    }\n    return out;\n  }\n  return value;\n}\n\nfunction stableStringify(value) {\n  if (Array.isArray(value)) {\n    return `[${value.map(stableStringify).join(',')}]`;\n  }\n  if (value && typeof value === 'object') {\n    return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${stableStringify(value[key])}`).join(',')}}`;\n  }\n  return JSON.stringify(value);\n}\n\nfunction stableHash(value) {\n  let hash = 2166136261;\n  for (let i = 0; i < value.length; i += 1) {\n    hash ^= value.charCodeAt(i);\n    hash = Math.imul(hash, 16777619);\n  }\n  return (hash >>> 0).toString(16).padStart(8, '0');\n}\n\nfunction firstNonEmptyString(...values) {\n  for (const value of values) {\n    if (typeof value === 'string' && value.trim()) {\n      return value.trim();\n    }\n  }\n  return null;\n}\n\nfunction resolveIngestionEventId(raw, lead) {\n  const headers = raw && typeof raw.headers === 'object' ? raw.headers : {};\n  const existing = firstNonEmptyString(\n    lead.event_id,\n    lead.eventId,\n    lead.ingestion_event_id,\n    lead.hookdeck_event_id,\n    raw.event_id,\n    raw.eventId,\n    raw.id,\n    raw.hookdeck_event_id,\n    headers['x-hookdeck-eventid'],\n    headers['x-hookdeck-event-id'],\n    headers['x-event-id']\n  );\n  if (existing) return existing;\n\n  const seed = stableStringify({\n    source_type: lead.source_type || raw.source_type || 'inbound',\n    submitted_at: lead.submitted_at || lead.timestamp || lead.created_at || raw.timestamp || null,\n    payload: lead,\n  });\n  return `cp_ingest_${stableHash(seed)}`;\n}\n\n/**\n * Main entry point for the n8n Code node.\n */\n\n  // Hookdeck / n8n may wrap the payload in an envelope (headers/params/query/body);\n  // unwrap if present so we always operate on the lead object itself.\n  const raw = $input.first().json;\n  const lead = raw.body && typeof raw.body === 'object' ? raw.body : raw;\n\n  // 0. Strip malformed text FIRST \u2014 before any gate. Rejected leads (bad email,\n  //    blocked jurisdiction) also flow to Log Spam, and control characters\n  //    (\\u0000 etc.) crash Postgres with 22P05 if they reach the spam_log RPC.\n  const strippedLead = stripMalformedText(lead);\n  const eventId = resolveIngestionEventId(raw, strippedLead);\n\n  // 1. Sanitize the email next \u2014 gate everything else on it.\n  const emailCheck = sanitizeEmail(strippedLead.email);\n\n  if (!emailCheck.ok) {\n    return {\n      json: {\n        ...strippedLead,\n        sanitized: false,\n        reason: emailCheck.reason,\n        email: emailCheck.email || null,\n        event_id: eventId,\n      },\n    };\n  }\n\n  // Anti-ICP Stage 5: hard-exclude blocked jurisdictions when the payload\n  // carries a country signal (ISO code or name) \u2014 reject at the door so we\n  // never spend verification/enrichment credits on them.\n  const jurisdiction = resolveBlockedCountry(strippedLead.country_code, strippedLead.country);\n  if (jurisdiction.blocked) {\n    return {\n      json: {\n        ...strippedLead,\n        sanitized: false,\n        reason: 'blocked_jurisdiction',\n        email: emailCheck.email || null,\n        event_id: eventId,\n        country_code: jurisdiction.code,\n      },\n    };\n  }\n\n  // 2. Pass branch: lead is already stripped (step 0). Re-apply the validated\n  //    email (normalized + lowercased).\n  const sanitizedLead = { ...strippedLead, event_id: eventId };\n  sanitizedLead.email = emailCheck.email;\n\n  return {\n    json: {\n      ...sanitizedLead,\n      sanitized: true,\n      email_domain: emailCheck.domain,\n    },\n  };\n"
+      }
+    },
+    {
+      "id": "if-sanitized",
+      "name": "Is Sanitized?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        1280,
+        80
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "cond-sanitized",
+              "leftValue": "={{ $json.sanitized }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true"
+              }
+            }
+          ]
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "rpc-get-or-create",
+      "name": "Dedup: Get or Create Lead",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 2,
+      "position": [
+        1600,
+        80
+      ],
+      "parameters": {
+        "url": "={{ $env.SUPABASE_URL + '/rest/v1/rpc/get_or_create_lead' }}",
+        "requestMethod": "POST",
+        "jsonParameters": true,
+        "headerParametersJson": "={{ JSON.stringify({ apikey: $env.SUPABASE_SERVICE_ROLE_KEY, Authorization: 'Bearer ' + $env.SUPABASE_SERVICE_ROLE_KEY }) }}",
+        "bodyParametersJson": "={{ JSON.stringify({ p_event_id: $json.event_id, p_email: $json.email, p_company_name: $json.company_name || '', p_raw_payload: $json.raw_payload || {}, p_firmographics: $json.firmographics || {}, p_source_type: $json.source_type || 'inbound', p_ip: $json.ip || null }) }}",
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "json"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "code-normalize-dedup",
+      "name": "Normalize Lead Context",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1920,
+        80
+      ],
+      "parameters": {
+        "jsCode": "\n  const dedupRaw = $('Dedup: Get or Create Lead').first().json;\n  const dedup = Array.isArray(dedupRaw) ? (dedupRaw[0] || {}) : (dedupRaw || {});\n  const sanitized = $('Sanitize Lead').first().json || {};\n\n  return [{\n    ...sanitized,\n    ...dedup,\n  }];\n"
+      }
+    },
+    {
+      "id": "rpc-append-event",
+      "name": "Append Timeline Event",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 2,
+      "position": [
+        2240,
+        80
+      ],
+      "parameters": {
+        "url": "={{ $env.SUPABASE_URL + '/rest/v1/rpc/append_lead_event' }}",
+        "requestMethod": "POST",
+        "jsonParameters": true,
+        "headerParametersJson": "={{ JSON.stringify({ apikey: $env.SUPABASE_SERVICE_ROLE_KEY, Authorization: 'Bearer ' + $env.SUPABASE_SERVICE_ROLE_KEY }) }}",
+        "bodyParametersJson": "={{ JSON.stringify({ p_lead_id: $json.lead_id, p_event_type: $json.is_new ? 'lead.captured' : 'lead.captured.duplicate', p_event_data: $('Sanitize Lead').first().json.raw_payload }) }}",
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "json"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "code-restore-after-timeline",
+      "name": "Preserve Lead Context",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2560,
+        80
+      ],
+      "parameters": {
+        "jsCode": "\n  const normalized = $('Normalize Lead Context').first().json || {};\n\n  return [{\n    ...normalized,\n    timeline_logged: true,\n  }];\n"
+      }
+    },
+    {
+      "id": "if-verify-enabled",
+      "name": "Verify Email?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        2880,
+        80
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "cond-is-new",
+              "leftValue": "={{ $('Normalize Lead Context').first().json.is_new }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true"
+              }
+            },
+            {
+              "id": "cond-verify-key",
+              "leftValue": "={{ $env.EMAIL_VERIFY_API_KEY }}",
+              "rightValue": "",
+              "operator": {
+                "type": "string",
+                "operation": "notEmpty"
+              }
+            }
+          ]
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "http-verify",
+      "name": "Call Verify API",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        3200,
+        0
+      ],
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $env.EMAIL_VERIFY_BASE_URL + '?api_key=' + $env.EMAIL_VERIFY_API_KEY + '&email=' + encodeURIComponent($('Sanitize Lead').first().json.email) }}",
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "json"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "code-verify-parse",
+      "name": "Parse Verification",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3520,
+        0
+      ],
+      "parameters": {
+        "jsCode": "/**\n * ============================================\n * n8n Code Node \u2014 Stage 2b: Parse Email Verification Result\n * ============================================\n * Paste this into an n8n \"Code\" node (JavaScript mode).\n *\n * Purpose:\n *   Normalize the verification provider's response into a single\n *   { deliverable, verdict } decision. Provider-agnostic \u2014 handles\n *   Emailable (state), Abstract (deliverability), Hunter (data.result),\n *   and ZeroBounce (status) shapes.\n *\n *   deliverable = true ONLY for confirmed-deliverable verdicts:\n *     Emailable:  state === \"deliverable\"\n *     Abstract:   deliverability === \"DELIVERABLE\" && not disposable\n *     Hunter:     result === \"deliverable\"\n *     ZeroBounce: status === \"valid\"\n *   catch-all / risky / unknown / disposable -> NOT deliverable\n *   (conservative by design for CRM hygiene).\n *\n * Input:   $json = provider response\n * Output:  [{ deliverable: boolean, verdict: string }]\n * ============================================\n */\n\n/** Normalize an Emailable / Abstract / Hunter / ZeroBounce verification response. */\nfunction parseVerifyResponse(raw) {\n  const data = (raw && (raw.data || raw)) || {};\n\n  // Emailable: { state: \"deliverable\"|\"undeliverable\"|\"risky\"|\"unknown\", reason }\n  const state = String(data.state || '').toLowerCase();\n\n  // Abstract: { deliverability: \"DELIVERABLE\"|\"UNDELIVERABLE\"|\"UNKNOWN\"|\"RISKY\", is_disposable_email: bool, ... }\n  const deliverability = String(data.deliverability || '').toLowerCase();\n\n  // Hunter:   { data: { status, result } }\n  // ZeroBounce: { status, sub_status }\n  const status = String(data.status || '').toLowerCase();\n  const result = String(data.result || '').toLowerCase();\n\n  // Mailboxlayer: { format_valid, mx_found, smtp_check, catch_all, disposable, ... }\n  const smtpOk = data.smtp_check === true || data.smtp_check === 'true';\n\n  const deliverable =\n    state === 'deliverable' ||\n    (deliverability === 'deliverable' && !data.is_disposable_email) ||\n    result === 'deliverable' ||\n    status === 'valid' ||\n    (data.format_valid === true && smtpOk && data.catch_all !== true && !data.disposable);\n\n  // verdict is debug info; the deliverable boolean is the decision.\n  const verdict = deliverable\n    ? 'deliverable'\n    : state || deliverability || result || status || 'unknown';\n\n  return { deliverable, verdict };\n}\n\n\n  const raw = $input.first().json;\n  const parsed = parseVerifyResponse(raw);\n\n  return [{ deliverable: parsed.deliverable, verdict: parsed.verdict }];\n"
+      }
+    },
+    {
+      "id": "if-deliverable",
+      "name": "Is Deliverable?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        3840,
+        0
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "cond-deliverable",
+              "leftValue": "={{ $json.deliverable }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true"
+              }
+            }
+          ]
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "rpc-mark-unverified",
+      "name": "Mark Unverified",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 2,
+      "position": [
+        3840,
+        420
+      ],
+      "parameters": {
+        "url": "={{ $env.SUPABASE_URL + '/rest/v1/rpc/mark_lead_unverified' }}",
+        "requestMethod": "POST",
+        "jsonParameters": true,
+        "headerParametersJson": "={{ JSON.stringify({ apikey: $env.SUPABASE_SERVICE_ROLE_KEY, Authorization: 'Bearer ' + $env.SUPABASE_SERVICE_ROLE_KEY }) }}",
+        "bodyParametersJson": "={{ JSON.stringify({ p_lead_id: $('Normalize Lead Context').first().json.lead_id }) }}",
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "json"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "rpc-evaluate-unverified",
+      "name": "Evaluate Qualification (Unverified)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 2,
+      "position": [
+        4160,
+        420
+      ],
+      "parameters": {
+        "url": "={{ $env.SUPABASE_URL + '/rest/v1/rpc/evaluate_lead_qualification' }}",
+        "requestMethod": "POST",
+        "jsonParameters": true,
+        "headerParametersJson": "={{ JSON.stringify({ apikey: $env.SUPABASE_SERVICE_ROLE_KEY, Authorization: 'Bearer ' + $env.SUPABASE_SERVICE_ROLE_KEY }) }}",
+        "bodyParametersJson": "={{ JSON.stringify({ p_lead_id: $('Normalize Lead Context').first().json.lead_id, p_evaluation_type: 'verification_failed', p_source_runtime: 'precrm_n8n' }) }}",
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "json"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "if-enrich-enabled",
+      "name": "Enrich Company?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        4160,
+        80
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "cond-enrich-key",
+              "leftValue": "={{ $env.ENRICH_API_KEY }}",
+              "rightValue": "",
+              "operator": {
+                "type": "string",
+                "operation": "notEmpty"
+              }
+            },
+            {
+              "id": "cond-enrich-domain",
+              "leftValue": "={{ $('Sanitize Lead').first().json.email_domain }}",
+              "rightValue": "",
+              "operator": {
+                "type": "string",
+                "operation": "notEmpty"
+              }
+            }
+          ]
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "http-enrich",
+      "name": "Call Enrich API",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 2,
+      "position": [
+        4480,
+        0
+      ],
+      "parameters": {
+        "url": "={{ $env.ENRICH_BASE_URL }}",
+        "requestMethod": "POST",
+        "jsonParameters": true,
+        "headerParametersJson": "={{ JSON.stringify({ 'X-Api-Key': $env.ENRICH_API_KEY }) }}",
+        "bodyParametersJson": "={{ JSON.stringify({ domain: $('Sanitize Lead').first().json.email_domain }) }}",
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "json"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "code-enrich-parse",
+      "name": "Parse Enrichment",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        4800,
+        80
+      ],
+      "parameters": {
+        "jsCode": "/**\n * ============================================\n * n8n Code Node \u2014 Stage 4: Merge Enrichment Into Firmographics\n * ============================================\n * Paste this into an n8n \"Code\" node (JavaScript mode).\n *\n * Purpose:\n *   Merge company enrichment data (Apollo organization response) into the\n *   lead's firmographics before Gemini scoring. Provider-agnostic: when the\n *   input carries an `organization` object the new fields win; otherwise\n *   the sanitizer's firmographics pass through unchanged (enrichment OFF).\n *\n * Business rules (see .clinerules):\n *   * Enrichment runs only for NEW + deliverable leads (the workflow gates\n *     it after verification) \u2014 never wastes credits on duplicates/bounces.\n *   * Enrichment never removes existing data \u2014 it only fills gaps.\n *\n * Reads:\n *   $input  = Call Enrich API response { organization: {...} }\n *             OR pass-through items (enrichment disabled path)\n *   $('Sanitize Lead')            -> { firmographics }   (base data)\n *   $('Dedup: Get or Create Lead') -> { lead_id }\n *\n * Output (to \"Score Lead (Gemini)\"):\n *   [{ lead_id, firmographics }]   (merged, or unchanged when no org data)\n * ============================================\n */\n\n/**\n * Merge Apollo organization data into base firmographics.\n * Organization fields win when present; base data is never dropped.\n */\nfunction mergeEnrichment(inputJson, baseFirmographics) {\n  const org = inputJson && inputJson.organization;\n  if (!org) {\n    return baseFirmographics || {};\n  }\n\n  return {\n    ...(baseFirmographics || {}),\n    industry: org.industry || (baseFirmographics || {}).industry,\n    employees: org.estimated_num_employees || (baseFirmographics || {}).employees,\n    country: org.country || (baseFirmographics || {}).country,\n    city: org.city || (baseFirmographics || {}).city,\n    enriched_by: 'apollo',\n  };\n}\n\n\n  const input = $input.first().json;\n  const sanitized = $('Sanitize Lead').first().json;\n  const base = (sanitized && sanitized.firmographics) || {};\n  const firmographics = mergeEnrichment(input, base);\n  const leadId = $('Dedup: Get or Create Lead').first().json.lead_id;\n\n  return [{ lead_id: leadId, firmographics }];\n"
+      }
+    },
+    {
+      "id": "code-jurisdiction-check",
+      "name": "Check Jurisdiction",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        5120,
+        80
+      ],
+      "parameters": {
+        "jsCode": "/**\n * ============================================\n * n8n Code Node \u2014 Stage 5: Blocked-Jurisdiction Check\n * ============================================\n * Paste this into an n8n \"Code\" node (JavaScript mode).\n *\n * Purpose:\n *   Enforce the anti-ICP hard-exclusion list for unsupported jurisdictions.\n *   Runs AFTER Stage 4 enrichment (which may reveal the country via the\n *   org's firmographics \u2014 Apollo returns country as a NAME, e.g. \"Russia\"),\n *   and BEFORE Stage 6 scoring. A blocked lead is never scored/CRM'd.\n *\n * Business rules (see .clinerules):\n *   * Blocked jurisdictions: KP, IR, CU, SY, BY, RU, VE, MM, SD, ZW.\n *   * Accepts ISO 3166-1 alpha-2 country_code OR a common country name\n *     (Apollo's name form) \u2014 both are normalized to the ISO code.\n *   * This node is the post-enrichment backstop; the sanitizer (Stage 1)\n *     already rejects payload-provided country signals at the door.\n *\n * Reads:\n *   $('Parse Enrichment')           -> { lead_id, firmographics }\n *   $('Dedup: Get or Create Lead')  -> { lead_id }\n *\n * Outputs (to \"Jurisdiction OK?\" IF node):\n *   [{ lead_id, jurisdiction_blocked, country_code }]\n * ============================================\n */\n\n// Unsupported jurisdictions (ISO 3166-1 alpha-2) whose leads are auto-disqualified.\nconst BLOCKED_JURISDICTIONS = new Set([\n  'KP', // North Korea\n  'IR', // Iran\n  'CU', // Cuba\n  'SY', // Syria\n  'BY', // Belarus\n  'RU', // Russia\n  'VE', // Venezuela\n  'MM', // Myanmar\n  'SD', // Sudan\n  'ZW', // Zimbabwe\n]);\n\n// Common country names / aliases -> ISO code, for the name-form country\n// field that enrichment providers (Apollo) return. Keys are normalized:\n// lowercase, letters/spaces only.\nconst COUNTRY_NAME_TO_CODE = {\n  'russia': 'RU',\n  'russian federation': 'RU',\n  'rf': 'RU',\n  'belarus': 'BY',\n  'belorussia': 'BY',\n  'iran': 'IR',\n  'islamic republic of iran': 'IR',\n  'persia': 'IR',\n  'north korea': 'KP',\n  'democratic peoples republic of korea': 'KP',\n  'dprk': 'KP',\n  'cuba': 'CU',\n  'syria': 'SY',\n  'syrian arab republic': 'SY',\n  'venezuela': 'VE',\n  'bolivarian republic of venezuela': 'VE',\n  'myanmar': 'MM',\n  'burma': 'MM',\n  'myanmar burma': 'MM',\n  'sudan': 'SD',\n  'zimbabwe': 'ZW',\n};\n\n/** Normalize a country name for lookup: lowercase, strip punctuation. */\nfunction normalizeCountryName(name) {\n  if (typeof name !== 'string') return '';\n  return name.toLowerCase().replace(/[^a-z ]/g, ' ').replace(/\\s+/g, ' ').trim();\n}\n\n/**\n * Resolve a country signal (ISO code and/or name) against the blocklist.\n * Returns { blocked, code } \u2014 code is the ISO alpha-2 code when blocked.\n */\nfunction resolveBlockedCountry(countryCode, countryName) {\n  if (typeof countryCode === 'string') {\n    const code = countryCode.trim().toUpperCase();\n    if (BLOCKED_JURISDICTIONS.has(code)) {\n      return { blocked: true, code };\n    }\n  }\n  const normalized = normalizeCountryName(countryName);\n  if (normalized && COUNTRY_NAME_TO_CODE[normalized]) {\n    const code = COUNTRY_NAME_TO_CODE[normalized];\n    if (BLOCKED_JURISDICTIONS.has(code)) {\n      return { blocked: true, code };\n    }\n  }\n  return { blocked: false, code: null };\n}\n\n\n  const enriched = $('Parse Enrichment').first().json;\n  const firmographics = (enriched && enriched.firmographics) || {};\n  const leadId = $('Dedup: Get or Create Lead').first().json.lead_id;\n\n  const res = resolveBlockedCountry(firmographics.country_code, firmographics.country);\n\n  return [{\n    lead_id: leadId,\n    jurisdiction_blocked: res.blocked,\n    country_code: res.code || firmographics.country_code || null,\n  }];\n"
+      }
+    },
+    {
+      "id": "if-jurisdiction-ok",
+      "name": "Jurisdiction OK?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        5440,
+        80
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "cond-jurisdiction-ok",
+              "leftValue": "={{ $json.jurisdiction_blocked }}",
+              "rightValue": false,
+              "operator": {
+                "type": "boolean",
+                "operation": "false"
+              }
+            }
+          ]
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "rpc-block-jurisdiction",
+      "name": "Block Jurisdiction",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 2,
+      "position": [
+        5440,
+        420
+      ],
+      "parameters": {
+        "url": "={{ $env.SUPABASE_URL + '/rest/v1/rpc/mark_lead_blocked' }}",
+        "requestMethod": "POST",
+        "jsonParameters": true,
+        "headerParametersJson": "={{ JSON.stringify({ apikey: $env.SUPABASE_SERVICE_ROLE_KEY, Authorization: 'Bearer ' + $env.SUPABASE_SERVICE_ROLE_KEY }) }}",
+        "bodyParametersJson": "={{ JSON.stringify({ p_lead_id: $json.lead_id, p_country: $json.country_code }) }}",
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "json"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "rpc-evaluate-blocked",
+      "name": "Evaluate Qualification (Blocked)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 2,
+      "position": [
+        5760,
+        420
+      ],
+      "parameters": {
+        "url": "={{ $env.SUPABASE_URL + '/rest/v1/rpc/evaluate_lead_qualification' }}",
+        "requestMethod": "POST",
+        "jsonParameters": true,
+        "headerParametersJson": "={{ JSON.stringify({ apikey: $env.SUPABASE_SERVICE_ROLE_KEY, Authorization: 'Bearer ' + $env.SUPABASE_SERVICE_ROLE_KEY }) }}",
+        "bodyParametersJson": "={{ JSON.stringify({ p_lead_id: $('Normalize Lead Context').first().json.lead_id, p_evaluation_type: 'jurisdiction_blocked', p_source_runtime: 'precrm_n8n' }) }}",
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "json"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "code-gemini-score",
+      "name": "Score Lead (Gemini)",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        5760,
+        80
+      ],
+      "parameters": {
+        "jsCode": "/**\n * ============================================\n * n8n Code Node \u2014 Stage 6a: Build Gemini Scoring Prompt\n * ============================================\n * Paste this into an n8n \"Code\" node (JavaScript mode).\n *\n * Purpose:\n *   Decide whether a NEW lead should be scored, and if so build the\n *   Gemini prompt from its firmographics. This node NEVER touches the\n *   API key \u2014 the actual API call is made by the \"Call Gemini API\"\n *   HTTP Request node (credential: Gemini API Key (dev)), and the\n *   response is validated by \"Parse Gemini Score\".\n *\n * Business rules (see .clinerules):\n *   * Only NEW leads are scored (duplicates would burn API quota re-scoring).\n *   * Leads without firmographic signal are skipped silently.\n *   * icp_score >= 70 -> status 'qualified', else -> 'nurture'\n *     (Module 4 routing happens later; Stage 6 only persists the score).\n *\n * Reads from:\n *   $('Normalize Lead Context')    -> { lead_id, is_new }\n *   $('Sanitize Lead')            -> { firmographics }\n *\n * Outputs (to \"Call Gemini API\"):\n *   [{ lead_id, prompt }]   -> score this lead\n *   []                      -> skip (duplicate / no firmographics)\n * ============================================\n */\n\n/** Build the prompt that instructs Gemini to score the lead. */\nfunction buildScoringPrompt(firmographics) {\n  return [\n    'You are a B2B RevOps lead-scoring assistant.',\n    'Analyze the following enriched firmographic data for a prospective company.',\n    'Return a STRICT JSON object (no markdown, no commentary) with exactly these keys:',\n    '  - \"icp_score\": an integer from 0 to 100 representing how well the company fits our ICP.',\n    '  - \"buying_intent\": one of \"high\", \"medium\", or \"low\" based on signals like tech stack maturity and monthly spend.',\n    '  - \"personalized_icebreaker\": a short, professional, personalized opening message (max 2 sentences) referencing the company\\'s tech stack and monthly spend.',\n    '',\n    'Firmographic data:',\n    JSON.stringify(firmographics, null, 2),\n    '',\n    'Respond with only the JSON object.',\n  ].join('\\n');\n}\n\n\n  const leadContext = $('Normalize Lead Context').first().json || {};\n  // Firmographics come from the enrichment merger (Stage 4) \u2014 which passes\n  // the sanitizer's firmographics through unchanged when enrichment is off.\n  const enriched = $('Parse Enrichment').first().json;\n  const firmographics = (enriched && enriched.firmographics) || {};\n\n  // Only score brand-new leads: duplicates already got a timeline event.\n  if (!leadContext.is_new) {\n    return [];\n  }\n\n  // Need at least one firmographic signal to score meaningfully.\n  const hasSignal =\n    firmographics &&\n    (firmographics.company_name ||\n      firmographics.industry ||\n      firmographics.employees ||\n      firmographics.tech_stack ||\n      firmographics.monthly_spend ||\n      firmographics.domain);\n\n  if (!hasSignal) {\n    return []; // nothing to score -> end branch silently\n  }\n\n  return [\n    {\n      lead_id: leadContext.lead_id,\n      prompt: buildScoringPrompt(firmographics),\n    },\n  ];\n"
+      }
+    },
+    {
+      "id": "http-gemini-call",
+      "name": "Call Gemini API",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        6080,
+        80
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.GEMINI_ENDPOINT + '?key=' + $env.GEMINI_API_KEY }}",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ contents: [{ parts: [{ text: $json.prompt }] }], generationConfig: { temperature: 0.2, maxOutputTokens: 512 } }) }}",
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "json"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "code-gemini-parse",
+      "name": "Parse Gemini Score",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        6400,
+        80
+      ],
+      "parameters": {
+        "jsCode": "/**\n * ============================================\n * n8n Code Node \u2014 Stage 6b: Parse & Validate Gemini Score\n * ============================================\n * Paste this into an n8n \"Code\" node (JavaScript mode).\n *\n * Purpose:\n *   Parse the \"Call Gemini API\" HTTP node response, validate the strict\n *   scoring shape, and hand a clean record to the \"Update Lead Score\"\n *   RPC node. No API key is touched here.\n *\n * Input:   $json  = Gemini generateContent response\n *          (candidates[0].content.parts[0].text = the JSON score)\n * Reads:   $('Score Lead (Gemini)') -> { lead_id }\n * Output:  [{ lead_id, icp_score, buying_intent,\n *             personalized_icebreaker, status }]\n *          or [] to end the branch silently (malformed / no text).\n * ============================================\n */\n\n/** Parse and validate the Gemini response into a strict scoring shape. */\nfunction parseGeminiResponse(raw) {\n  const cleaned = raw\n    .replace(/```json/gi, '')\n    .replace(/```/g, '')\n    .trim();\n\n  const parsed = JSON.parse(cleaned);\n  const icp_score = Number(parsed.icp_score);\n  const buying_intent = parsed.buying_intent;\n  const personalized_icebreaker = parsed.personalized_icebreaker;\n\n  if (\n    Number.isNaN(icp_score) ||\n    icp_score < 0 ||\n    icp_score > 100 ||\n    !['high', 'medium', 'low'].includes(buying_intent) ||\n    typeof personalized_icebreaker !== 'string'\n  ) {\n    throw new Error('Gemini returned an unexpected scoring shape.');\n  }\n\n  return { icp_score, buying_intent, personalized_icebreaker };\n}\n\n\n  const response = $input.first().json;\n  const text = response.candidates?.[0]?.content?.parts?.[0]?.text;\n\n  if (!text) {\n    return []; // no usable text -> end branch silently\n  }\n\n  const score = parseGeminiResponse(text);\n  const leadId = $('Score Lead (Gemini)').first().json.lead_id;\n  const status = score.icp_score >= 70 ? 'qualified' : 'nurture';\n\n  return [\n    {\n      lead_id: leadId,\n      icp_score: score.icp_score,\n      buying_intent: score.buying_intent,\n      personalized_icebreaker: score.personalized_icebreaker,\n      status,\n    },\n  ];\n"
+      }
+    },
+    {
+      "id": "rpc-update-score",
+      "name": "Update Lead Score",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 2,
+      "position": [
+        6720,
+        80
+      ],
+      "parameters": {
+        "url": "={{ $env.SUPABASE_URL + '/rest/v1/rpc/update_lead_score' }}",
+        "requestMethod": "POST",
+        "jsonParameters": true,
+        "headerParametersJson": "={{ JSON.stringify({ apikey: $env.SUPABASE_SERVICE_ROLE_KEY, Authorization: 'Bearer ' + $env.SUPABASE_SERVICE_ROLE_KEY }) }}",
+        "bodyParametersJson": "={{ JSON.stringify({ p_lead_id: $json.lead_id, p_icp_score: $json.icp_score, p_buying_intent: $json.buying_intent, p_icebreaker: $json.personalized_icebreaker, p_status: $json.status, p_firmographics: $('Parse Enrichment').first().json.firmographics }) }}",
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "json"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "rpc-evaluate-score",
+      "name": "Evaluate Qualification",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 2,
+      "position": [
+        7040,
+        80
+      ],
+      "parameters": {
+        "url": "={{ $env.SUPABASE_URL + '/rest/v1/rpc/evaluate_lead_qualification' }}",
+        "requestMethod": "POST",
+        "jsonParameters": true,
+        "headerParametersJson": "={{ JSON.stringify({ apikey: $env.SUPABASE_SERVICE_ROLE_KEY, Authorization: 'Bearer ' + $env.SUPABASE_SERVICE_ROLE_KEY }) }}",
+        "bodyParametersJson": "={{ JSON.stringify({ p_lead_id: $('Parse Gemini Score').first().json.lead_id, p_evaluation_type: 'score_update', p_source_runtime: 'precrm_n8n' }) }}",
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "json"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "code-normalize-qualification",
+      "name": "Normalize Qualification Context",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        7200,
+        80
+      ],
+      "parameters": {
+        "jsCode": "\n  const raw = $input.first().json;\n  const qualification = Array.isArray(raw) ? (raw[0] || {}) : (raw || {});\n\n  return [{\n    ...qualification,\n  }];\n"
+      }
+    },
+    {
+      "id": "rpc-route-inbound",
+      "name": "Route Lead to Sales (Inbound)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 2,
+      "position": [
+        7680,
+        0
+      ],
+      "parameters": {
+        "url": "={{ $env.SUPABASE_URL + '/rest/v1/rpc/route_lead_to_sales' }}",
+        "requestMethod": "POST",
+        "jsonParameters": true,
+        "headerParametersJson": "={{ JSON.stringify({ apikey: $env.SUPABASE_SERVICE_ROLE_KEY, Authorization: 'Bearer ' + $env.SUPABASE_SERVICE_ROLE_KEY }) }}",
+        "bodyParametersJson": "={{ JSON.stringify({ p_lead_id: $json.lead_id, p_trigger: 'inbound_sql_runtime', p_force_reassign: false }) }}",
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "json"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "if-outbound",
+      "name": "Outbound Lead?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        7360,
+        80
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "cond-outbound",
+              "leftValue": "={{ $('Sanitize Lead').first().json.source_type }}",
+              "rightValue": "outbound_scraped",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ]
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "http-mx-check",
+      "name": "Check MX (Outbound)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 2,
+      "position": [
+        7680,
+        240
+      ],
+      "parameters": {
+        "url": "={{ 'http://mx-service:9001/mx?domain=' + encodeURIComponent(($('Sanitize Lead').first().json.email_domain || '')) }}",
+        "requestMethod": "GET",
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "json"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "code-outbound-gate",
+      "name": "Outbound Gate",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        8000,
+        240
+      ],
+      "parameters": {
+        "jsCode": "/**\n * ============================================\n * n8n Code Node \u2014 Outbound Gate (v2 M4)\n * ============================================\n * Runs ONLY for source_type='outbound_scraped' leads, after scoring. Decides\n * whether the lead is ready for the AI-outreach loop.\n *\n * Pass ONLY if: MX-ok (domain has a live mail server) AND icp_score >= 70.\n * Deliverability is already guaranteed upstream (only verified leads reach\n * scoring), so the gate here is MX + relevance. A no-MX or low-score lead is\n * kept staged with a logged reason, never emailed.\n *\n * Reads:\n *   $json (current item) = the MX sidecar response { domain, hasMx, records, error }\n *   $('Parse Gemini Score') = { icp_score, ... }\n *\n * Outputs: [{ outbound_gate: 'pass'|'fail', outbound_reason, icp_score }]\n * ============================================\n */\n\n\n  const mx = $json || {};\n  const score = $('Parse Gemini Score').first().json || {};\n  const icp = typeof score.icp_score === 'number' ? score.icp_score : 0;\n\n  if (!mx.hasMx) {\n    return [{ outbound_gate: 'fail', outbound_reason: 'no_mx', mx_domain: mx.domain || null, mx_error: mx.error || null, icp_score: icp }];\n  }\n  if (icp < 70) {\n    return [{ outbound_gate: 'fail', outbound_reason: 'low_score', icp_score: icp }];\n  }\n  return [{ outbound_gate: 'pass', outbound_reason: null, icp_score: icp }];\n"
+      }
+    },
+    {
+      "id": "if-outbound-pass",
+      "name": "Outbound Gate Pass?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        8320,
+        240
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "cond-outbound-pass",
+              "leftValue": "={{ $json.outbound_gate }}",
+              "rightValue": "pass",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ]
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "rpc-ready-to-push",
+      "name": "Mark Ready to Push",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 2,
+      "position": [
+        8640,
+        240
+      ],
+      "parameters": {
+        "url": "={{ $env.SUPABASE_URL + '/rest/v1/rpc/mark_ready_to_push' }}",
+        "requestMethod": "POST",
+        "jsonParameters": true,
+        "headerParametersJson": "={{ JSON.stringify({ apikey: $env.SUPABASE_SERVICE_ROLE_KEY, Authorization: 'Bearer ' + $env.SUPABASE_SERVICE_ROLE_KEY }) }}",
+        "bodyParametersJson": "={{ JSON.stringify({ p_lead_id: $('Normalize Lead Context').first().json.lead_id, p_reason: null }) }}",
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "json"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "rpc-evaluate-outbound-ready",
+      "name": "Evaluate Qualification (Outbound Ready)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 2,
+      "position": [
+        8960,
+        240
+      ],
+      "parameters": {
+        "url": "={{ $env.SUPABASE_URL + '/rest/v1/rpc/evaluate_lead_qualification' }}",
+        "requestMethod": "POST",
+        "jsonParameters": true,
+        "headerParametersJson": "={{ JSON.stringify({ apikey: $env.SUPABASE_SERVICE_ROLE_KEY, Authorization: 'Bearer ' + $env.SUPABASE_SERVICE_ROLE_KEY }) }}",
+        "bodyParametersJson": "={{ JSON.stringify({ p_lead_id: $('Normalize Lead Context').first().json.lead_id, p_evaluation_type: 'outbound_ready', p_source_runtime: 'precrm_n8n' }) }}",
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "json"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "rpc-route-outbound-ready",
+      "name": "Route Lead to Sales (Outbound Ready)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 2,
+      "position": [
+        9280,
+        240
+      ],
+      "parameters": {
+        "url": "={{ $env.SUPABASE_URL + '/rest/v1/rpc/route_lead_to_sales' }}",
+        "requestMethod": "POST",
+        "jsonParameters": true,
+        "headerParametersJson": "={{ JSON.stringify({ apikey: $env.SUPABASE_SERVICE_ROLE_KEY, Authorization: 'Bearer ' + $env.SUPABASE_SERVICE_ROLE_KEY }) }}",
+        "bodyParametersJson": "={{ JSON.stringify({ p_lead_id: $('Normalize Lead Context').first().json.lead_id, p_trigger: 'outbound_ready_runtime', p_force_reassign: false }) }}",
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "json"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "slack-ready-to-push",
+      "name": "Slack Alert: Ready to Push",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        9600,
+        240
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.SLACK_WEBHOOK_URL }}",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ text: '\ud83d\udcec READY TO PUSH (outbound): ' + ($('Sanitize Lead').first().json.company_name || 'Unknown') + ' (' + $('Sanitize Lead').first().json.email + ')\\nICP ' + $('Parse Gemini Score').first().json.icp_score + '/100 \u00b7 MX OK\\nOwner: ' + (($('Route Lead to Sales (Outbound Ready)').first().json.current_owner_type || 'unassigned').toUpperCase()) + ' \u00b7 Priority: ' + ($('Route Lead to Sales (Outbound Ready)').first().json.priority_tier || 'low') + ' \u00b7 Route: ' + ($('Route Lead to Sales (Outbound Ready)').first().json.routing_reason || 'n/a') }) }}",
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "text"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "rpc-sales-sync-outbound-slack",
+      "name": "Sales Assignment Sync (Outbound Slack)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 2,
+      "position": [
+        9920,
+        240
+      ],
+      "parameters": {
+        "url": "={{ $env.SUPABASE_URL + '/rest/v1/rpc/update_sales_assignment_sync' }}",
+        "requestMethod": "POST",
+        "jsonParameters": true,
+        "headerParametersJson": "={{ JSON.stringify({ apikey: $env.SUPABASE_SERVICE_ROLE_KEY, Authorization: 'Bearer ' + $env.SUPABASE_SERVICE_ROLE_KEY }) }}",
+        "bodyParametersJson": "={{ JSON.stringify({ p_lead_id: $('Normalize Lead Context').first().json.lead_id, p_slack_sync_status: 'synced', p_reason: 'outbound_ready_sales_alert' }) }}",
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "json"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "code-outreach-prompt",
+      "name": "Build Outreach Email",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        10240,
+        240
+      ],
+      "parameters": {
+        "jsCode": "/**\n * ============================================\n * n8n Code Node \u2014 v2 M5: Build Outreach Email Prompt\n * ============================================\n * For a ready_to_push OUTBOUND lead, build the Gemini prompt that writes a\n * personalized first-touch cold email. Runs only on the outbound ready_to_push\n * branch. No API key is touched here \u2014 the HTTP node does the call.\n *\n * Reads:\n *   $('Sanitize Lead')            -> { email, name, role, company_name, email_domain }\n *   $('Parse Gemini Score')       -> { icp_score, ... }\n *   $('Parse Enrichment')         -> { firmographics }\n *   $('Dedup: Get or Create Lead')-> { lead_id }\n *\n * Outputs (to \"Call Gemini (Outreach)\"):\n *   [{ lead_id, email, prompt }]\n * ============================================\n */\n\nfunction buildOutreachPrompt(lead, score, firmographics) {\n  const firmo = firmographics && typeof firmographics === 'object' ? firmographics : {};\n  const industry = firmo.industry || 'your industry';\n  const size = firmo.employees || 'your size';\n  const country = firmo.country || '';\n  const name = lead.name || 'there';\n  const role = lead.role || 'your team';\n  return [\n    'You are a B2B RevOps SDR writing a short, personalized FIRST outreach email.',\n    `Write a professional cold email to ${lead.company_name || lead.email_domain} (${industry}, ~${size} employees${country ? ', ' + country : ''}).`,\n    `Recipient: ${name}${role ? ' (' + role + ')' : ''}.`,\n    `Relevance score (ICP fit): ${score.icp_score ?? 'n/a'}/100.`,\n    'Rules:',\n    '  - Max 90 words; one clear value proposition; no links, no attachments, no hype.',\n    '  - Reference one signal from their company/role naturally (not generic).',\n    '  - End with a single low-pressure question.',\n    'Return a STRICT JSON object (no markdown, no commentary) with exactly:',\n    '  - \"subject\": a short subject line (max 8 words),',\n    '  - \"body\": the email body as a single string with \\\\n line breaks.',\n    '',\n    'Lead context:',\n    `  company: ${lead.company_name || lead.email_domain}`,\n    `  industry: ${industry}`,\n    `  employees: ${size}`,\n    `  country: ${country || 'n/a'}`,\n    `  name: ${name}`,\n    `  role: ${role}`,\n  ].join('\\n');\n}\n\n\n  const lead = $('Sanitize Lead').first().json;\n  const score = $('Parse Gemini Score').first().json;\n  const firmo = $('Parse Enrichment').first().json.firmographics || {};\n  const leadId = $('Dedup: Get or Create Lead').first().json.lead_id;\n  const prompt = buildOutreachPrompt(lead, score, firmo);\n  return [{ lead_id: leadId, email: lead.email, company_name: lead.company_name || lead.email_domain, prompt }];\n"
+      }
+    },
+    {
+      "id": "http-gemini-outreach",
+      "name": "Call Gemini (Outreach)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        10560,
+        240
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.GEMINI_ENDPOINT + '?key=' + $env.GEMINI_API_KEY }}",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ contents: [{ parts: [{ text: $json.prompt }] }], generationConfig: { temperature: 0.7, maxOutputTokens: 512 } }) }}",
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "json"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "code-outreach-parse",
+      "name": "Parse Outreach Email",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        10880,
+        240
+      ],
+      "parameters": {
+        "jsCode": "/**\n * ============================================\n * n8n Code Node \u2014 v2 M5: Parse Outreach Email\n * ============================================\n * Parse { subject, body } out of the Gemini outreach response, with a safe\n * fallback so a malformed/truncated response never breaks the send node.\n *\n * Reads:\n *   $('Call Gemini (Outreach)')   -> the Gemini generateContent response\n *   $('Build Outreach Email')     -> { lead_id, email, prompt }\n *\n * Outputs (to \"Insert Outreach Row\" / Brevo send):\n *   [{ lead_id, to_email, subject, body }]\n * ============================================\n */\n\nfunction geminiText(resp) {\n  try {\n    const candidates = resp && resp.candidates;\n    const parts = candidates && candidates[0] && candidates[0].content && candidates[0].content.parts;\n    if (parts && parts[0] && typeof parts[0].text === 'string') return parts[0].text;\n  } catch (e) { /* fall through */ }\n  return '';\n}\n\nfunction extractJson(text) {\n  const cleaned = String(text || '').trim().replace(/^```(json)?/i, '').replace(/```$/, '').trim();\n  const start = cleaned.indexOf('{');\n  const end = cleaned.lastIndexOf('}');\n  if (start === -1 || end === -1 || end <= start) return null;\n  try { return JSON.parse(cleaned.slice(start, end + 1)); } catch (e) { return null; }\n}\n\nfunction parseOutreach(resp) {\n  const parsed = extractJson(geminiText(resp)) || {};\n  const subject = String(parsed.subject || '').trim();\n  const body = String(parsed.body || '').trim();\n  if (subject && body) return { subject, body };\n  return {\n    subject: subject || 'A thought for your team',\n    body: body || 'Hi there \u2014 I noticed your company and thought I could share a quick, relevant idea. Open to a short chat when timing suits.',\n  };\n}\n\n\n  const gemini = $('Call Gemini (Outreach)').first().json;\n  const built = $('Build Outreach Email').first().json;\n  const { subject, body } = parseOutreach(gemini);\n  return [{ lead_id: built.lead_id, to_email: built.email, subject, body }];\n"
+      }
+    },
+    {
+      "id": "rpc-insert-outreach",
+      "name": "Insert Outreach Row",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 2,
+      "position": [
+        11200,
+        240
+      ],
+      "parameters": {
+        "url": "={{ $env.SUPABASE_URL + '/rest/v1/rpc/insert_outreach' }}",
+        "requestMethod": "POST",
+        "jsonParameters": true,
+        "headerParametersJson": "={{ JSON.stringify({ apikey: $env.SUPABASE_SERVICE_ROLE_KEY, Authorization: 'Bearer ' + $env.SUPABASE_SERVICE_ROLE_KEY }) }}",
+        "bodyParametersJson": "={{ JSON.stringify({ p_lead_id: $json.lead_id, p_email: $json.to_email, p_subject: $json.subject, p_body: $json.body, p_status: 'queued' }) }}",
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "json"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "if-outreach-send",
+      "name": "Send Outreach Email?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        11520,
+        240
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "cond-brevo-outreach",
+              "leftValue": "={{ $env.BREVO_API_KEY }}",
+              "rightValue": "",
+              "operator": {
+                "type": "string",
+                "operation": "notEmpty"
+              }
+            }
+          ]
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "http-brevo-outreach",
+      "name": "Send Outreach (Brevo)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 2,
+      "position": [
+        11840,
+        240
+      ],
+      "parameters": {
+        "url": "={{ $env.BREVO_BASE_URL }}",
+        "requestMethod": "POST",
+        "jsonParameters": true,
+        "headerParametersJson": "={{ JSON.stringify({ 'api-key': $env.BREVO_API_KEY }) }}",
+        "bodyParametersJson": "={{ JSON.stringify({ sender: { name: $env.BREVO_SENDER_NAME, email: $env.BREVO_SENDER_EMAIL }, to: [{ email: $('Parse Outreach Email').first().json.to_email }], subject: $('Parse Outreach Email').first().json.subject, textContent: $('Parse Outreach Email').first().json.body }) }}",
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "json"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "rpc-outreach-sent",
+      "name": "Mark Outreach Sent",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 2,
+      "position": [
+        12160,
+        240
+      ],
+      "parameters": {
+        "url": "={{ $env.SUPABASE_URL + '/rest/v1/rpc/mark_outreach_sent' }}",
+        "requestMethod": "POST",
+        "jsonParameters": true,
+        "headerParametersJson": "={{ JSON.stringify({ apikey: $env.SUPABASE_SERVICE_ROLE_KEY, Authorization: 'Bearer ' + $env.SUPABASE_SERVICE_ROLE_KEY }) }}",
+        "bodyParametersJson": "={{ JSON.stringify({ p_id: $('Insert Outreach Row').first().json.id }) }}",
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "json"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "rpc-lead-emailed",
+      "name": "Mark Lead Emailed",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 2,
+      "position": [
+        12480,
+        240
+      ],
+      "parameters": {
+        "url": "={{ $env.SUPABASE_URL + '/rest/v1/rpc/mark_lead_emailed' }}",
+        "requestMethod": "POST",
+        "jsonParameters": true,
+        "headerParametersJson": "={{ JSON.stringify({ apikey: $env.SUPABASE_SERVICE_ROLE_KEY, Authorization: 'Bearer ' + $env.SUPABASE_SERVICE_ROLE_KEY }) }}",
+        "bodyParametersJson": "={{ JSON.stringify({ p_lead_id: $('Parse Outreach Email').first().json.lead_id }) }}",
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "json"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "rpc-evaluate-outreach-sent",
+      "name": "Evaluate Qualification (Outreach Sent)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 2,
+      "position": [
+        12800,
+        240
+      ],
+      "parameters": {
+        "url": "={{ $env.SUPABASE_URL + '/rest/v1/rpc/evaluate_lead_qualification' }}",
+        "requestMethod": "POST",
+        "jsonParameters": true,
+        "headerParametersJson": "={{ JSON.stringify({ apikey: $env.SUPABASE_SERVICE_ROLE_KEY, Authorization: 'Bearer ' + $env.SUPABASE_SERVICE_ROLE_KEY }) }}",
+        "bodyParametersJson": "={{ JSON.stringify({ p_lead_id: $('Parse Outreach Email').first().json.lead_id, p_evaluation_type: 'outreach_sent', p_source_runtime: 'precrm_n8n' }) }}",
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "json"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "slack-outreach-sent",
+      "name": "Slack: Outreach Sent",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        13120,
+        240
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.SLACK_WEBHOOK_URL }}",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ text: '\u2709\ufe0f OUTREACH SENT: ' + ($('Sanitize Lead').first().json.company_name || 'Unknown') + ' (' + $('Parse Outreach Email').first().json.to_email + ')\\nOwner: ' + (($('Route Lead to Sales (Outbound Ready)').first().json.current_owner_type || 'unassigned').toUpperCase()) + ' \u00b7 Route: ' + ($('Route Lead to Sales (Outbound Ready)').first().json.routing_reason || 'n/a') }) }}",
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "text"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "http-hs-outbound-contact",
+      "name": "HubSpot: Sync Outbound Contact",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 2,
+      "position": [
+        13440,
+        240
+      ],
+      "parameters": {
+        "url": "={{ $env.HUBSPOT_BASE_URL + '/crm/v3/objects/contacts?&idProperty=email' }}",
+        "requestMethod": "POST",
+        "jsonParameters": true,
+        "headerParametersJson": "={{ JSON.stringify({ Authorization: 'Bearer ' + $env.HUBSPOT_ACCESS_TOKEN }) }}",
+        "bodyParametersJson": "={{ JSON.stringify({ properties: { email: $('Sanitize Lead').first().json.email, company: $('Sanitize Lead').first().json.company_name || '', lead_source: 'outbound_scraped', outreach_status: 'emailed' } }) }}",
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "json"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "rpc-sales-sync-outbound-crm",
+      "name": "Sales Assignment Sync (Outbound CRM)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 2,
+      "position": [
+        13760,
+        240
+      ],
+      "parameters": {
+        "url": "={{ $env.SUPABASE_URL + '/rest/v1/rpc/update_sales_assignment_sync' }}",
+        "requestMethod": "POST",
+        "jsonParameters": true,
+        "headerParametersJson": "={{ JSON.stringify({ apikey: $env.SUPABASE_SERVICE_ROLE_KEY, Authorization: 'Bearer ' + $env.SUPABASE_SERVICE_ROLE_KEY }) }}",
+        "bodyParametersJson": "={{ JSON.stringify({ p_lead_id: $('Parse Outreach Email').first().json.lead_id, p_crm_sync_status: 'synced', p_reason: 'outbound_contact_sync' }) }}",
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "json"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "rpc-log-gate-fail",
+      "name": "Log Outbound Gate Fail",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 2,
+      "position": [
+        8320,
+        420
+      ],
+      "parameters": {
+        "url": "={{ $env.SUPABASE_URL + '/rest/v1/rpc/append_lead_event' }}",
+        "requestMethod": "POST",
+        "jsonParameters": true,
+        "headerParametersJson": "={{ JSON.stringify({ apikey: $env.SUPABASE_SERVICE_ROLE_KEY, Authorization: 'Bearer ' + $env.SUPABASE_SERVICE_ROLE_KEY }) }}",
+        "bodyParametersJson": "={{ JSON.stringify({ p_lead_id: $('Normalize Lead Context').first().json.lead_id, p_event_type: 'lead.outbound.gate.failed', p_event_data: { reason: $json.outbound_reason, icp_score: $json.icp_score } }) }}",
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "json"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "if-crm-ready",
+      "name": "CRM Ready?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        8000,
+        0
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "cond-crm-ready",
+              "leftValue": "={{ $('Normalize Qualification Context').first().json.crm_ready }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true"
+              }
+            }
+          ]
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "http-hs-contact",
+      "name": "HubSpot: Upsert Contact",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 2,
+      "position": [
+        8320,
+        0
+      ],
+      "parameters": {
+        "url": "={{ $env.HUBSPOT_BASE_URL + '/crm/v3/objects/contacts?&idProperty=email' }}",
+        "requestMethod": "POST",
+        "jsonParameters": true,
+        "headerParametersJson": "={{ JSON.stringify({ Authorization: 'Bearer ' + $env.HUBSPOT_ACCESS_TOKEN }) }}",
+        "bodyParametersJson": "={{ JSON.stringify({ properties: { email: $('Sanitize Lead').first().json.email, company: $('Sanitize Lead').first().json.company_name || '' } }) }}",
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "json"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "code-hs-contact-context",
+      "name": "Normalize HubSpot Contact Context",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        8480,
+        0
+      ],
+      "parameters": {
+        "jsCode": "const raw = $input.first()?.json || {};\nconst firstResult = Array.isArray(raw.results) ? raw.results[0] : null;\nconst candidateId =\n  raw.id ??\n  raw.hs_object_id ??\n  raw.properties?.hs_object_id ??\n  firstResult?.id ??\n  firstResult?.hs_object_id ??\n  firstResult?.properties?.hs_object_id;\nconst contactId = String(candidateId || '').replace(/^0-1-/, '').trim();\n\nif (!contactId) {\n  throw new Error('missing_hubspot_contact_id');\n}\n\nreturn [{\n  json: {\n    ...raw,\n    hubspot_contact_id: contactId,\n    hubspot_contact_email: $('Sanitize Lead').first().json.email,\n    hubspot_contact_status: raw.createdAt ? 'created_or_updated' : 'upserted',\n  },\n}];\n"
+      }
+    },
+    {
+      "id": "http-hs-deal",
+      "name": "HubSpot: Create Deal",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 2,
+      "position": [
+        8800,
+        0
+      ],
+      "parameters": {
+        "url": "={{ $env.HUBSPOT_BASE_URL + '/crm/v3/objects/deals' }}",
+        "requestMethod": "POST",
+        "jsonParameters": true,
+        "headerParametersJson": "={{ JSON.stringify({ Authorization: 'Bearer ' + $env.HUBSPOT_ACCESS_TOKEN }) }}",
+        "bodyParametersJson": "={{ JSON.stringify({ properties: { dealname: ($('Sanitize Lead').first().json.company_name || 'Lead') + ' \u2014 PreCRM', amount: '0', pipeline: 'default', dealstage: 'appointmentscheduled' }, associations: [{ types: [{ associationCategory: 'HUBSPOT_DEFINED', associationTypeId: 3 }], to: { id: $('Normalize HubSpot Contact Context').first().json.hubspot_contact_id } }] }) }}",
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "json"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "rpc-sales-sync-inbound-crm",
+      "name": "Sales Assignment Sync (Inbound CRM)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 2,
+      "position": [
+        8960,
+        0
+      ],
+      "parameters": {
+        "url": "={{ $env.SUPABASE_URL + '/rest/v1/rpc/update_sales_assignment_sync' }}",
+        "requestMethod": "POST",
+        "jsonParameters": true,
+        "headerParametersJson": "={{ JSON.stringify({ apikey: $env.SUPABASE_SERVICE_ROLE_KEY, Authorization: 'Bearer ' + $env.SUPABASE_SERVICE_ROLE_KEY }) }}",
+        "bodyParametersJson": "={{ JSON.stringify({ p_lead_id: $('Normalize Qualification Context').first().json.lead_id, p_crm_sync_status: 'synced', p_reason: 'inbound_hubspot_sync' }) }}",
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "json"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "http-slack-qualified",
+      "name": "Slack Alert: Qualified Lead",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        9280,
+        0
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.SLACK_WEBHOOK_URL }}",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ text: '\ud83d\ude80 QUALIFIED LEAD: ' + ($('Sanitize Lead').first().json.company_name || 'Unknown') + ' (' + $('Sanitize Lead').first().json.email + ')\\nICP score: ' + $('Parse Gemini Score').first().json.icp_score + '/100 \u00b7 Intent: ' + $('Parse Gemini Score').first().json.buying_intent + '\\nOwner: ' + (($('Route Lead to Sales (Inbound)').first().json.current_owner_type || 'unassigned').toUpperCase()) + ' \u00b7 Priority: ' + ($('Route Lead to Sales (Inbound)').first().json.priority_tier || 'low') + ' \u00b7 Route: ' + ($('Route Lead to Sales (Inbound)').first().json.routing_reason || 'n/a') + '\\nIcebreaker: ' + ($('Parse Gemini Score').first().json.personalized_icebreaker || '\u2014') + '\\nDeal: ' + $json.url }) }}",
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "text"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "rpc-sales-sync-inbound-slack",
+      "name": "Sales Assignment Sync (Inbound Slack)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 2,
+      "position": [
+        9600,
+        0
+      ],
+      "parameters": {
+        "url": "={{ $env.SUPABASE_URL + '/rest/v1/rpc/update_sales_assignment_sync' }}",
+        "requestMethod": "POST",
+        "jsonParameters": true,
+        "headerParametersJson": "={{ JSON.stringify({ apikey: $env.SUPABASE_SERVICE_ROLE_KEY, Authorization: 'Bearer ' + $env.SUPABASE_SERVICE_ROLE_KEY }) }}",
+        "bodyParametersJson": "={{ JSON.stringify({ p_lead_id: $('Normalize Qualification Context').first().json.lead_id, p_slack_sync_status: 'synced', p_reason: 'inbound_sales_alert' }) }}",
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "json"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "http-slack-nurture",
+      "name": "Slack Alert: Nurture",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        8320,
+        520
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.SLACK_WEBHOOK_URL }}",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ text: '\ud83c\udf31 NURTURE: ' + ($('Sanitize Lead').first().json.company_name || 'Unknown') + ' (' + $('Sanitize Lead').first().json.email + ') \u2014 ICP ' + $('Parse Gemini Score').first().json.icp_score + '/100. Not CRM-ready yet.' }) }}",
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "text"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "if-nurture-email",
+      "name": "Send Nurture Email?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        8640,
+        520
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "cond-brevo-key",
+              "leftValue": "={{ $env.BREVO_API_KEY }}",
+              "rightValue": "",
+              "operator": {
+                "type": "string",
+                "operation": "notEmpty"
+              }
+            }
+          ]
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "code-nurture-prompt",
+      "name": "Build Nurture Email",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        8960,
+        520
+      ],
+      "parameters": {
+        "jsCode": "/**\n * ============================================\n * n8n Code Node \u2014 Module 4: Build Nurture Email Prompt\n * ============================================\n * Paste this into an n8n \"Code\" node (JavaScript mode).\n *\n * Purpose:\n *   For a NURTURE lead (icp_score < 70, not CRM-ready), build a Gemini\n *   prompt that writes a short, personalized follow-up email. Runs only\n *   on the nurture branch, and only when BREVO_API_KEY is set (env-gated).\n *\n * Business rules (see .clinerules):\n *   * Nurture leads are NOT sent to HubSpot \u2014 they get an email instead.\n *   * Gemini writes the copy (subject + body), keeps it short and human.\n *   * No API key is touched in this node \u2014 the HTTP node does the call.\n *\n * Reads:\n *   $('Sanitize Lead')            -> { email, company_name, firmographics }\n *   $('Parse Gemini Score')       -> { icp_score, buying_intent, personalized_icebreaker }\n *   $('Dedup: Get or Create Lead')-> { lead_id }\n *\n * Outputs (to \"Call Gemini (Nurture Email)\"):\n *   [{ lead_id, prompt, email, company_name }]\n * ============================================\n */\n\n/** Build the prompt that instructs Gemini to write the nurture email. */\nfunction buildNurturePrompt(leadInfo, scoreInfo, firmographics) {\n  return [\n    'You are a B2B RevOps assistant writing a nurture follow-up email.',\n    'The prospect is not yet ready to buy but is worth staying in touch with.',\n    'Write a SHORT, friendly, professional email (max 120 words) that:',\n    '  - references their company/industry signal naturally,',\n    '  - offers one useful, low-pressure value point,',\n    '  - ends with a soft question (not a sales pitch).',\n    'Return a STRICT JSON object (no markdown, no commentary) with exactly:',\n    '  - \"subject\": a short subject line (max 8 words),',\n    '  - \"body\": the email body as a single string with \\\\n line breaks.',\n    '',\n    'Lead context:',\n    JSON.stringify({\n      company: leadInfo.company_name,\n      email: leadInfo.email,\n      icp_score: scoreInfo.icp_score,\n      buying_intent: scoreInfo.buying_intent,\n      icebreaker: scoreInfo.personalized_icebreaker,\n      firmographics: firmographics || {},\n    }, null, 2),\n    '',\n    'Respond with only the JSON object.',\n  ].join('\\n');\n}\n\n\n  const lead = $('Sanitize Lead').first().json;\n  const score = $('Parse Gemini Score').first().json;\n  const dedup = $('Dedup: Get or Create Lead').first().json;\n\n  return [{\n    lead_id: dedup.lead_id,\n    email: lead.email,\n    company_name: lead.company_name,\n    prompt: buildNurturePrompt(\n      { company_name: lead.company_name, email: lead.email },\n      { icp_score: score.icp_score, buying_intent: score.buying_intent, personalized_icebreaker: score.personalized_icebreaker },\n      lead.firmographics\n    ),\n  }];\n"
+      }
+    },
+    {
+      "id": "http-gemini-nurture",
+      "name": "Call Gemini (Nurture Email)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        9280,
+        520
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.GEMINI_ENDPOINT + '?key=' + $env.GEMINI_API_KEY }}",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ contents: [{ parts: [{ text: $json.prompt }] }], generationConfig: { temperature: 0.7, maxOutputTokens: 512 } }) }}",
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "json"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "code-nurture-parse",
+      "name": "Parse Nurture Email",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        9600,
+        520
+      ],
+      "parameters": {
+        "jsCode": "/**\n * ============================================\n * n8n Code Node \u2014 Module 4: Parse Nurture Email\n * ============================================\n * Paste this into an n8n \"Code\" node (JavaScript mode).\n *\n * Purpose:\n *   Extract { subject, body } from Gemini's strict-JSON nurture email\n *   response (defensive: tolerate markdown fences / stray text like the\n *   scoring parser does).\n *\n * Reads:\n *   $('Call Gemini (Nurture Email)') -> Gemini generateContent response\n *   $('Build Nurture Email')         -> { lead_id, email, company_name }\n *\n * Outputs (to \"Send Nurture Email (Brevo)\"):\n *   [{ lead_id, to_email, subject, body }]\n * ============================================\n */\n\n/** Pull the text out of a Gemini generateContent response. */\nfunction geminiText(raw) {\n  try {\n    const candidates = raw && raw.candidates;\n    const parts = candidates && candidates[0] && candidates[0].content && candidates[0].content.parts;\n    if (parts && parts[0] && typeof parts[0].text === 'string') return parts[0].text;\n  } catch (e) { /* fall through */ }\n  return '';\n}\n\n/** Defensively parse a JSON object out of the model text. */\nfunction extractJson(text) {\n  const cleaned = String(text || '').trim().replace(/^```(json)?/i, '').replace(/```$/, '').trim();\n  const start = cleaned.indexOf('{');\n  const end = cleaned.lastIndexOf('}');\n  if (start === -1 || end === -1 || end <= start) return null;\n  try {\n    return JSON.parse(cleaned.slice(start, end + 1));\n  } catch (e) {\n    return null;\n  }\n}\n\n\n  const gemini = $('Call Gemini (Nurture Email)').first().json;\n  const built = $('Build Nurture Email').first().json;\n\n  const parsed = extractJson(geminiText(gemini)) || {};\n  const subject = String(parsed.subject || '').trim();\n  const body = String(parsed.body || '').trim();\n\n  if (!subject || !body) {\n    // Defensive: fall back to a templated message so the send node still works.\n    return [{\n      lead_id: built.lead_id,\n      to_email: built.email,\n      subject: subject || 'A quick thought for your team',\n      body: body || 'Hi there \u2014 just checking in with a useful resource. Happy to share more when the timing is right.',\n    }];\n  }\n\n  return [{\n    lead_id: built.lead_id,\n    to_email: built.email,\n    subject,\n    body,\n  }];\n"
+      }
+    },
+    {
+      "id": "http-brevo-send",
+      "name": "Send Nurture Email (Brevo)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 2,
+      "position": [
+        9920,
+        520
+      ],
+      "parameters": {
+        "url": "={{ $env.BREVO_BASE_URL }}",
+        "requestMethod": "POST",
+        "jsonParameters": true,
+        "headerParametersJson": "={{ JSON.stringify({ 'api-key': $env.BREVO_API_KEY }) }}",
+        "bodyParametersJson": "={{ JSON.stringify({ sender: { name: $env.BREVO_SENDER_NAME, email: $env.BREVO_SENDER_EMAIL }, to: [{ email: $json.to_email }], subject: $json.subject, textContent: $json.body }) }}",
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "json"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "rpc-log-nurture-email",
+      "name": "Log Nurture Email",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 2,
+      "position": [
+        10240,
+        520
+      ],
+      "parameters": {
+        "url": "={{ $env.SUPABASE_URL + '/rest/v1/rpc/append_lead_event' }}",
+        "requestMethod": "POST",
+        "jsonParameters": true,
+        "headerParametersJson": "={{ JSON.stringify({ apikey: $env.SUPABASE_SERVICE_ROLE_KEY, Authorization: 'Bearer ' + $env.SUPABASE_SERVICE_ROLE_KEY }) }}",
+        "bodyParametersJson": "={{ JSON.stringify({ p_lead_id: $('Parse Nurture Email').first().json.lead_id, p_event_type: 'lead.nurture.email.sent', p_event_data: { subject: $('Parse Nurture Email').first().json.subject, to: $('Parse Nurture Email').first().json.to_email } }) }}",
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "json"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "rpc-evaluate-nurture",
+      "name": "Evaluate Qualification (Nurture Sent)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 2,
+      "position": [
+        10560,
+        520
+      ],
+      "parameters": {
+        "url": "={{ $env.SUPABASE_URL + '/rest/v1/rpc/evaluate_lead_qualification' }}",
+        "requestMethod": "POST",
+        "jsonParameters": true,
+        "headerParametersJson": "={{ JSON.stringify({ apikey: $env.SUPABASE_SERVICE_ROLE_KEY, Authorization: 'Bearer ' + $env.SUPABASE_SERVICE_ROLE_KEY }) }}",
+        "bodyParametersJson": "={{ JSON.stringify({ p_lead_id: $('Parse Nurture Email').first().json.lead_id, p_evaluation_type: 'nurture_sent', p_source_runtime: 'precrm_n8n' }) }}",
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "json"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "rpc-log-spam",
+      "name": "Log Spam",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 2,
+      "position": [
+        1280,
+        420
+      ],
+      "parameters": {
+        "url": "={{ $env.SUPABASE_URL + '/rest/v1/rpc/log_spam' }}",
+        "requestMethod": "POST",
+        "jsonParameters": true,
+        "headerParametersJson": "={{ JSON.stringify({ apikey: $env.SUPABASE_SERVICE_ROLE_KEY, Authorization: 'Bearer ' + $env.SUPABASE_SERVICE_ROLE_KEY }) }}",
+        "bodyParametersJson": "={{ JSON.stringify({ p_event_id: $json.event_id, p_email: $json.email, p_reason: $json.reason, p_raw_payload: $json.raw_payload }) }}",
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "json"
+            }
+          }
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Webhook - Hookdeck Ingest": {
+      "main": [
+        [
+          {
+            "node": "Anti-Abuse Gate",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Webhook - Outbound Ingest": {
+      "main": [
+        [
+          {
+            "node": "Anti-Abuse Gate",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Anti-Abuse Gate": {
+      "main": [
+        [
+          {
+            "node": "Abuse OK?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Abuse OK?": {
+      "main": [
+        [
+          {
+            "node": "Sanitize Lead",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Record Abuse",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Sanitize Lead": {
+      "main": [
+        [
+          {
+            "node": "Is Sanitized?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Is Sanitized?": {
+      "main": [
+        [
+          {
+            "node": "Dedup: Get or Create Lead",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Log Spam",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Dedup: Get or Create Lead": {
+      "main": [
+        [
+          {
+            "node": "Normalize Lead Context",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Normalize Lead Context": {
+      "main": [
+        [
+          {
+            "node": "Append Timeline Event",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Append Timeline Event": {
+      "main": [
+        [
+          {
+            "node": "Preserve Lead Context",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Preserve Lead Context": {
+      "main": [
+        [
+          {
+            "node": "Verify Email?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Verify Email?": {
+      "main": [
+        [
+          {
+            "node": "Call Verify API",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Parse Enrichment",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Call Verify API": {
+      "main": [
+        [
+          {
+            "node": "Parse Verification",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Verification": {
+      "main": [
+        [
+          {
+            "node": "Is Deliverable?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Is Deliverable?": {
+      "main": [
+        [
+          {
+            "node": "Enrich Company?",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Mark Unverified",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Mark Unverified": {
+      "main": [
+        [
+          {
+            "node": "Evaluate Qualification (Unverified)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Enrich Company?": {
+      "main": [
+        [
+          {
+            "node": "Call Enrich API",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Parse Enrichment",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Call Enrich API": {
+      "main": [
+        [
+          {
+            "node": "Parse Enrichment",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Enrichment": {
+      "main": [
+        [
+          {
+            "node": "Check Jurisdiction",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check Jurisdiction": {
+      "main": [
+        [
+          {
+            "node": "Jurisdiction OK?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Jurisdiction OK?": {
+      "main": [
+        [
+          {
+            "node": "Score Lead (Gemini)",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Block Jurisdiction",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Block Jurisdiction": {
+      "main": [
+        [
+          {
+            "node": "Evaluate Qualification (Blocked)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Score Lead (Gemini)": {
+      "main": [
+        [
+          {
+            "node": "Call Gemini API",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Call Gemini API": {
+      "main": [
+        [
+          {
+            "node": "Parse Gemini Score",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Gemini Score": {
+      "main": [
+        [
+          {
+            "node": "Update Lead Score",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Update Lead Score": {
+      "main": [
+        [
+          {
+            "node": "Evaluate Qualification",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Evaluate Qualification": {
+      "main": [
+        [
+          {
+            "node": "Normalize Qualification Context",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Normalize Qualification Context": {
+      "main": [
+        [
+          {
+            "node": "Outbound Lead?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Outbound Lead?": {
+      "main": [
+        [
+          {
+            "node": "Check MX (Outbound)",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Route Lead to Sales (Inbound)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Route Lead to Sales (Inbound)": {
+      "main": [
+        [
+          {
+            "node": "CRM Ready?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check MX (Outbound)": {
+      "main": [
+        [
+          {
+            "node": "Outbound Gate",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Outbound Gate": {
+      "main": [
+        [
+          {
+            "node": "Outbound Gate Pass?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Outbound Gate Pass?": {
+      "main": [
+        [
+          {
+            "node": "Mark Ready to Push",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Log Outbound Gate Fail",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Mark Ready to Push": {
+      "main": [
+        [
+          {
+            "node": "Evaluate Qualification (Outbound Ready)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Evaluate Qualification (Outbound Ready)": {
+      "main": [
+        [
+          {
+            "node": "Route Lead to Sales (Outbound Ready)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Route Lead to Sales (Outbound Ready)": {
+      "main": [
+        [
+          {
+            "node": "Slack Alert: Ready to Push",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Slack Alert: Ready to Push": {
+      "main": [
+        [
+          {
+            "node": "Sales Assignment Sync (Outbound Slack)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Sales Assignment Sync (Outbound Slack)": {
+      "main": [
+        [
+          {
+            "node": "Build Outreach Email",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Outreach Email": {
+      "main": [
+        [
+          {
+            "node": "Call Gemini (Outreach)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Call Gemini (Outreach)": {
+      "main": [
+        [
+          {
+            "node": "Parse Outreach Email",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Outreach Email": {
+      "main": [
+        [
+          {
+            "node": "Insert Outreach Row",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Insert Outreach Row": {
+      "main": [
+        [
+          {
+            "node": "Send Outreach Email?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send Outreach Email?": {
+      "main": [
+        [
+          {
+            "node": "Send Outreach (Brevo)",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        []
+      ]
+    },
+    "Send Outreach (Brevo)": {
+      "main": [
+        [
+          {
+            "node": "Mark Outreach Sent",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Mark Outreach Sent": {
+      "main": [
+        [
+          {
+            "node": "Mark Lead Emailed",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Mark Lead Emailed": {
+      "main": [
+        [
+          {
+            "node": "Evaluate Qualification (Outreach Sent)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Evaluate Qualification (Outreach Sent)": {
+      "main": [
+        [
+          {
+            "node": "Slack: Outreach Sent",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Slack: Outreach Sent": {
+      "main": [
+        [
+          {
+            "node": "HubSpot: Sync Outbound Contact",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HubSpot: Sync Outbound Contact": {
+      "main": [
+        [
+          {
+            "node": "Sales Assignment Sync (Outbound CRM)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "CRM Ready?": {
+      "main": [
+        [
+          {
+            "node": "HubSpot: Upsert Contact",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Slack Alert: Nurture",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HubSpot: Upsert Contact": {
+      "main": [
+        [
+          {
+            "node": "Normalize HubSpot Contact Context",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Normalize HubSpot Contact Context": {
+      "main": [
+        [
+          {
+            "node": "HubSpot: Create Deal",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HubSpot: Create Deal": {
+      "main": [
+        [
+          {
+            "node": "Sales Assignment Sync (Inbound CRM)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Sales Assignment Sync (Inbound CRM)": {
+      "main": [
+        [
+          {
+            "node": "Slack Alert: Qualified Lead",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Slack Alert: Qualified Lead": {
+      "main": [
+        [
+          {
+            "node": "Sales Assignment Sync (Inbound Slack)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Slack Alert: Nurture": {
+      "main": [
+        [
+          {
+            "node": "Send Nurture Email?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send Nurture Email?": {
+      "main": [
+        [
+          {
+            "node": "Build Nurture Email",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        []
+      ]
+    },
+    "Build Nurture Email": {
+      "main": [
+        [
+          {
+            "node": "Call Gemini (Nurture Email)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Call Gemini (Nurture Email)": {
+      "main": [
+        [
+          {
+            "node": "Parse Nurture Email",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Nurture Email": {
+      "main": [
+        [
+          {
+            "node": "Send Nurture Email (Brevo)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send Nurture Email (Brevo)": {
+      "main": [
+        [
+          {
+            "node": "Log Nurture Email",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Log Nurture Email": {
+      "main": [
+        [
+          {
+            "node": "Evaluate Qualification (Nurture Sent)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "pinData": {},
+  "meta": {
+    "templateCredsSetupCompleted": true
+  }
+}

@@ -1,0 +1,654 @@
+{
+  "id": "revops-signal-orchestration",
+  "name": "RevOps Signal Orchestration",
+  "nodes": [
+    {
+      "id": "manual-trigger",
+      "name": "RevOps: Manual Trigger",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        0,
+        0
+      ],
+      "parameters": {}
+    },
+    {
+      "id": "schedule-trigger",
+      "name": "RevOps: Every Hour",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        0,
+        180
+      ],
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "hours",
+              "hoursInterval": 1
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "generate-signals",
+      "name": "RevOps: Generate Signals",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 2,
+      "position": [
+        480,
+        80
+      ],
+      "parameters": {
+        "url": "={{ $env.SUPABASE_URL + '/rest/v1/rpc/generate_revops_signals' }}",
+        "requestMethod": "POST",
+        "jsonParameters": true,
+        "headerParametersJson": "={{ JSON.stringify({ apikey: $env.SUPABASE_SERVICE_ROLE_KEY, Authorization: 'Bearer ' + $env.SUPABASE_SERVICE_ROLE_KEY }) }}",
+        "bodyParametersJson": "={{ JSON.stringify({ p_source: 'n8n_revops_orchestration' }) }}",
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "json"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "require-scoped-account",
+      "name": "RevOps: Dynamic Signal Scope",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        320,
+        80
+      ],
+      "parameters": {
+        "jsCode": "return [{ json: { scope: 'all_accounts', source: 'n8n_revops_orchestration' } }];\n"
+      }
+    },
+    {
+      "id": "split-signals",
+      "name": "RevOps: Split Signals",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        800,
+        80
+      ],
+      "parameters": {
+        "jsCode": "/**\n * Split generated RevOps signals.\n * Handles PostgREST's normal array response and emits one item per pending signal.\n * If nothing is actionable, emit one explicit no-op item so manual/scheduled runs\n * finish clearly instead of looking like a broken empty branch.\n */\n\nconst rawItems = typeof $input.all === 'function'\n  ? $input.all().map((item) => item.json)\n  : [$input.first()?.json];\nconst payload = rawItems.flatMap((raw) => Array.isArray(raw) ? raw : [raw]);\nconst currentProductSignalTypes = new Set([\n  'PQL_REACHED',\n  'UPGRADE_INTENT',\n  'SIGNIFICANT_USAGE_GROWTH',\n  'SUBSCRIPTION_ACTIVATED',\n  'ALLOWANCE_PRESSURE',\n  'BUDGET_PRESSURE',\n]);\nconst signals = payload.filter((row) =>\n  row &&\n  row.signal_key &&\n  row.status === 'pending' &&\n  row.account_id &&\n  currentProductSignalTypes.has(row.signal_type)\n);\n\nif (!signals.length) {\n  return [{ json: { actionable: false, status: 'no_actionable_signals', signal_count: 0 } }];\n}\n\nreturn signals.map((signal) => ({ json: { ...signal, actionable: true } }));\n"
+      }
+    },
+    {
+      "id": "has-actionable-signal",
+      "name": "RevOps: Has Actionable Signal?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        1120,
+        80
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "cond-has-actionable-signal",
+              "leftValue": "={{ $json.actionable }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ]
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "get-signal-detail",
+      "name": "RevOps: Get Signal Detail",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 2,
+      "position": [
+        1440,
+        80
+      ],
+      "parameters": {
+        "url": "={{ $env.SUPABASE_URL + '/rest/v1/revops_signal_queue?signal_key=eq.' + encodeURIComponent($json.signal_key) + '&select=*&limit=1' }}",
+        "requestMethod": "GET",
+        "jsonParameters": true,
+        "headerParametersJson": "={{ JSON.stringify({ apikey: $env.SUPABASE_SERVICE_ROLE_KEY, Authorization: 'Bearer ' + $env.SUPABASE_SERVICE_ROLE_KEY }) }}",
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "json"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "hubspot-create-deal",
+      "name": "RevOps: HubSpot Create Signal Deal",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 2,
+      "position": [
+        2400,
+        80
+      ],
+      "parameters": {
+        "url": "={{ $env.HUBSPOT_BASE_URL + '/crm/v3/objects/deals' }}",
+        "requestMethod": "POST",
+        "jsonParameters": true,
+        "headerParametersJson": "={{ JSON.stringify({ Authorization: 'Bearer ' + $env.HUBSPOT_ACCESS_TOKEN }) }}",
+        "bodyParametersJson": "={{ JSON.stringify({ properties: { dealname: 'RevOps Signal — ' + (($('RevOps: Get Signal Detail').first().json[0] && $('RevOps: Get Signal Detail').first().json[0].account_name) || 'Account'), amount: '0', pipeline: 'default', dealstage: 'appointmentscheduled', description: 'Internal RevOps signal: ' + (($('RevOps: Get Signal Detail').first().json[0] && $('RevOps: Get Signal Detail').first().json[0].signal_type) || 'unknown') } }) }}",
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "json"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "pql-sales-handoff",
+      "name": "RevOps: PQL Sales Handoff",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 2,
+      "position": [
+        1760,
+        80
+      ],
+      "parameters": {
+        "url": "={{ $env.SUPABASE_URL + '/rest/v1/rpc/assign_pql_sales_owner' }}",
+        "requestMethod": "POST",
+        "jsonParameters": true,
+        "headerParametersJson": "={{ JSON.stringify({ apikey: $env.SUPABASE_SERVICE_ROLE_KEY, Authorization: 'Bearer ' + $env.SUPABASE_SERVICE_ROLE_KEY }) }}",
+        "bodyParametersJson": "={{ JSON.stringify({ p_signal_key: $('RevOps: Get Signal Detail').first().json[0].signal_key, p_lead_id: $('RevOps: Get Signal Detail').first().json[0].lead_id || null, p_signal_type: $('RevOps: Get Signal Detail').first().json[0].signal_type, p_trigger: 'pql_product_trigger' }) }}",
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "json"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "claim-hubspot-step",
+      "name": "RevOps: Claim HubSpot Step",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 2,
+      "position": [
+        1760,
+        80
+      ],
+      "parameters": {
+        "url": "={{ $env.SUPABASE_URL + '/rest/v1/rpc/claim_revops_signal_step' }}",
+        "requestMethod": "POST",
+        "jsonParameters": true,
+        "headerParametersJson": "={{ JSON.stringify({ apikey: $env.SUPABASE_SERVICE_ROLE_KEY, Authorization: 'Bearer ' + $env.SUPABASE_SERVICE_ROLE_KEY }) }}",
+        "bodyParametersJson": "={{ JSON.stringify({ p_signal_key: $('RevOps: Get Signal Detail').first().json[0].signal_key, p_step: 'hubspot', p_workflow_execution_id: $execution.id }) }}",
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "json"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "should-create-hubspot",
+      "name": "RevOps: Should Create HubSpot?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        2080,
+        80
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "cond-should-create-hubspot",
+              "leftValue": "={{ $json[0].should_execute }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ]
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "record-hubspot-step",
+      "name": "RevOps: Record HubSpot Step",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 2,
+      "position": [
+        2720,
+        80
+      ],
+      "parameters": {
+        "url": "={{ $env.SUPABASE_URL + '/rest/v1/rpc/record_revops_hubspot_step' }}",
+        "requestMethod": "POST",
+        "jsonParameters": true,
+        "headerParametersJson": "={{ JSON.stringify({ apikey: $env.SUPABASE_SERVICE_ROLE_KEY, Authorization: 'Bearer ' + $env.SUPABASE_SERVICE_ROLE_KEY }) }}",
+        "bodyParametersJson": "={{ JSON.stringify({ p_signal_key: $('RevOps: Get Signal Detail').first().json[0].signal_key, p_hubspot_deal_id: $('RevOps: HubSpot Create Signal Deal').first().json.id, p_workflow_execution_id: $execution.id }) }}",
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "json"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "claim-slack-step",
+      "name": "RevOps: Claim Slack Step",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 2,
+      "position": [
+        3040,
+        80
+      ],
+      "parameters": {
+        "url": "={{ $env.SUPABASE_URL + '/rest/v1/rpc/claim_revops_signal_step' }}",
+        "requestMethod": "POST",
+        "jsonParameters": true,
+        "headerParametersJson": "={{ JSON.stringify({ apikey: $env.SUPABASE_SERVICE_ROLE_KEY, Authorization: 'Bearer ' + $env.SUPABASE_SERVICE_ROLE_KEY }) }}",
+        "bodyParametersJson": "={{ JSON.stringify({ p_signal_key: $('RevOps: Get Signal Detail').first().json[0].signal_key, p_step: 'slack', p_workflow_execution_id: $execution.id }) }}",
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "json"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "should-send-slack",
+      "name": "RevOps: Should Send Slack?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        3360,
+        80
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "cond-should-send-slack",
+              "leftValue": "={{ $json[0].should_execute }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ]
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "slack-alert",
+      "name": "RevOps: Slack Alert",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        3680,
+        80
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.SLACK_WEBHOOK_URL }}",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ text: 'RevOps signal: ' + ($('RevOps: Get Signal Detail').first().json[0].signal_type || 'unknown') + '\\nAccount: ' + ($('RevOps: Get Signal Detail').first().json[0].account_name || 'Unknown') + '\\nPriority: ' + ($('RevOps: Get Signal Detail').first().json[0].priority || 'medium') + '\\nOwner: ' + ($('RevOps: Get Signal Detail').first().json[0].internal_owner_name || 'Unassigned') + '\\nHubSpot deal: ' + ($('RevOps: Claim Slack Step').first().json[0].hubspot_deal_id || 'not_created') + '\\nInternal signal only — no outbound campaign was sent.' }) }}",
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "text"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "record-slack-step",
+      "name": "RevOps: Record Slack Step",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 2,
+      "position": [
+        4000,
+        80
+      ],
+      "parameters": {
+        "url": "={{ $env.SUPABASE_URL + '/rest/v1/rpc/record_revops_slack_step' }}",
+        "requestMethod": "POST",
+        "jsonParameters": true,
+        "headerParametersJson": "={{ JSON.stringify({ apikey: $env.SUPABASE_SERVICE_ROLE_KEY, Authorization: 'Bearer ' + $env.SUPABASE_SERVICE_ROLE_KEY }) }}",
+        "bodyParametersJson": "={{ JSON.stringify({ p_signal_key: $('RevOps: Get Signal Detail').first().json[0].signal_key, p_workflow_execution_id: $execution.id }) }}",
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "json"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "slack-already-complete",
+      "name": "RevOps: Slack Already Complete?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        3680,
+        260
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "cond-slack-already-complete",
+              "leftValue": "={{ $json[0].skip_reason }}",
+              "rightValue": "slack_already_completed",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ]
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "record-outcome",
+      "name": "RevOps: Record Outcome",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 2,
+      "position": [
+        4320,
+        80
+      ],
+      "parameters": {
+        "url": "={{ $env.SUPABASE_URL + '/rest/v1/rpc/record_revops_signal_outcome' }}",
+        "requestMethod": "POST",
+        "jsonParameters": true,
+        "headerParametersJson": "={{ JSON.stringify({ apikey: $env.SUPABASE_SERVICE_ROLE_KEY, Authorization: 'Bearer ' + $env.SUPABASE_SERVICE_ROLE_KEY }) }}",
+        "bodyParametersJson": "={{ JSON.stringify({ p_signal_key: $('RevOps: Get Signal Detail').first().json[0].signal_key, p_status: 'completed', p_outcome_status: 'notified', p_outcome_notes: 'HubSpot internal deal created/reused and Slack alert sent/reused by Phase 7 RevOps workflow.', p_workflow_execution_id: $execution.id, p_hubspot_deal_id: $('RevOps: Claim Slack Step').first().json[0].hubspot_deal_id, p_slack_notified: true }) }}",
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "json"
+            }
+          }
+        }
+      }
+    }
+  ],
+  "connections": {
+    "RevOps: Manual Trigger": {
+      "main": [
+        [
+          {
+            "node": "RevOps: Dynamic Signal Scope",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "RevOps: Every Hour": {
+      "main": [
+        [
+          {
+            "node": "RevOps: Dynamic Signal Scope",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "RevOps: Dynamic Signal Scope": {
+      "main": [
+        [
+          {
+            "node": "RevOps: Generate Signals",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "RevOps: Generate Signals": {
+      "main": [
+        [
+          {
+            "node": "RevOps: Split Signals",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "RevOps: Split Signals": {
+      "main": [
+        [
+          {
+            "node": "RevOps: Has Actionable Signal?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "RevOps: Has Actionable Signal?": {
+      "main": [
+        [
+          {
+            "node": "RevOps: Get Signal Detail",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        []
+      ]
+    },
+    "RevOps: Get Signal Detail": {
+      "main": [
+        [
+          {
+            "node": "RevOps: PQL Sales Handoff",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "RevOps: PQL Sales Handoff": {
+      "main": [
+        [
+          {
+            "node": "RevOps: Claim HubSpot Step",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "RevOps: Claim HubSpot Step": {
+      "main": [
+        [
+          {
+            "node": "RevOps: Should Create HubSpot?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "RevOps: Should Create HubSpot?": {
+      "main": [
+        [
+          {
+            "node": "RevOps: HubSpot Create Signal Deal",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "RevOps: Claim Slack Step",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "RevOps: HubSpot Create Signal Deal": {
+      "main": [
+        [
+          {
+            "node": "RevOps: Record HubSpot Step",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "RevOps: Record HubSpot Step": {
+      "main": [
+        [
+          {
+            "node": "RevOps: Claim Slack Step",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "RevOps: Claim Slack Step": {
+      "main": [
+        [
+          {
+            "node": "RevOps: Should Send Slack?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "RevOps: Should Send Slack?": {
+      "main": [
+        [
+          {
+            "node": "RevOps: Slack Alert",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "RevOps: Slack Already Complete?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "RevOps: Slack Alert": {
+      "main": [
+        [
+          {
+            "node": "RevOps: Record Slack Step",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "RevOps: Record Slack Step": {
+      "main": [
+        [
+          {
+            "node": "RevOps: Record Outcome",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "RevOps: Slack Already Complete?": {
+      "main": [
+        [
+          {
+            "node": "RevOps: Record Outcome",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        []
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "active": false,
+  "pinData": {},
+  "versionId": "phase7-revops-signal-orchestration-v1",
+  "meta": {
+    "templateCredsSetupCompleted": true
+  },
+  "tags": [
+    {
+      "name": "automation-engine"
+    },
+    {
+      "name": "phase7"
+    },
+    {
+      "name": "revops"
+    }
+  ]
+}

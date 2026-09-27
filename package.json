@@ -1,0 +1,29 @@
+{
+  "name": "agentflow-backend-engine",
+  "version": "0.1.0",
+  "description": "Product-neutral automation backend for AgentFlow-compatible workflow systems.",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "lint": "eslint . --max-warnings=0",
+    "test": "pnpm build && node --test dist/testing/*.test.js",
+    "validate:legacy": "node validators/validate_pre_crm_workflows.cjs"
+  },
+  "engines": {
+    "node": ">=22.0.0",
+    "pnpm": ">=10.0.0"
+  },
+  "dependencies": {
+    "cheerio": "^1.2.0",
+    "playwright": "^1.62.1"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.38.0",
+    "@types/node": "^24.10.0",
+    "eslint": "^9.38.0",
+    "typescript": "^5.9.3",
+    "typescript-eslint": "^8.46.2"
+  }
+}
