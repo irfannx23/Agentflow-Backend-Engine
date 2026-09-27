@@ -1,5 +1,7 @@
 # Backend Architecture
 
+Phase 4 business-engine details are documented in [Business Engines](business-engines.md), [Pre-CRM Engine](pre-crm-engine.md), [RevOps Signal Engine](revops-signal-engine.md), and the [Workflow Catalogue](workflow-catalogue.md).
+
 `agentflow-backend-engine` is an independent automation platform. It has no source-code dependency on AgentFlow or CostPilot.
 
 ## Layering

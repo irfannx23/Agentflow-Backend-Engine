@@ -33,7 +33,7 @@ export const WORKFLOW_DEFINITIONS = [
     name: 'Lead Qualification',
     category: 'pre-crm',
     description: 'Ingest, sanitize, verify, enrich, qualify, route, and follow up with inbound or outbound leads.',
-    version: '1.1.0',
+    version: '1.2.0',
     triggerTypes: ['webhook'],
     supportedIntegrations: ['hookdeck', 'supabase', 'emailable', 'mx', 'apollo', 'gemini', 'hubspot', 'slack', 'brevo'],
     requiredCredentials: [
@@ -56,14 +56,14 @@ export const WORKFLOW_DEFINITIONS = [
     validation, health: { status: 'healthy', checks: ['registry', 'workflow', 'integration', 'parameters', 'n8n-compatibility'] },
     runtimePolicy, repairCompatibility,
     complexity: 'very-high', status: 'stable', owner, supportedPlatforms: ['n8n'], n8nVersion,
-    documentation: 'docs/knowledge/pre-crm/playbook.md', workflowPath: 'workflows/pre-crm/lead-qualification.workflow.json',
+    documentation: 'docs/pre-crm-engine.md', workflowPath: 'workflows/pre-crm/lead-qualification.workflow.json',
   },
   {
     id: 'pre-crm.reply-to-deal',
     name: 'Reply to Deal',
     category: 'pre-crm',
     description: 'Detect replied outreach, refresh qualification, create a CRM deal, and notify the assigned team.',
-    version: '1.1.0', triggerTypes: ['cron'], supportedIntegrations: ['supabase', 'hubspot', 'slack'],
+    version: '1.2.0', triggerTypes: ['cron'], supportedIntegrations: ['supabase', 'hubspot', 'slack'],
     requiredCredentials: [
       { id: 'supabase-service', name: 'Supabase Service Credential', integrationId: 'supabase', authentication: 'bearer', configuredAtRuntime: true },
       { id: 'hubspot', name: 'HubSpot Connection', integrationId: 'hubspot', authentication: 'bearer', configuredAtRuntime: true },
@@ -76,14 +76,14 @@ export const WORKFLOW_DEFINITIONS = [
     validation, health: { status: 'healthy', checks: ['registry', 'workflow', 'integration', 'parameters', 'n8n-compatibility'] },
     runtimePolicy, repairCompatibility,
     complexity: 'medium', status: 'stable', owner, supportedPlatforms: ['n8n'], n8nVersion,
-    documentation: 'docs/knowledge/pre-crm/playbook.md', workflowPath: 'workflows/pre-crm/reply-to-deal.workflow.json',
+    documentation: 'docs/workflow-catalogue.md', workflowPath: 'workflows/pre-crm/reply-to-deal.workflow.json',
   },
   {
     id: 'revops.signal-orchestration',
     name: 'RevOps Signal Orchestration',
     category: 'revops',
     description: 'Generate persisted revenue signals and coordinate idempotent CRM and Slack outcomes.',
-    version: '1.1.0', triggerTypes: ['cron', 'internal-event'], supportedIntegrations: ['supabase', 'hubspot', 'slack'],
+    version: '1.2.0', triggerTypes: ['cron', 'internal-event'], supportedIntegrations: ['supabase', 'hubspot', 'slack'],
     requiredCredentials: [
       { id: 'supabase-service', name: 'Supabase Service Credential', integrationId: 'supabase', authentication: 'bearer', configuredAtRuntime: true },
       { id: 'hubspot', name: 'HubSpot Connection', integrationId: 'hubspot', authentication: 'bearer', configuredAtRuntime: true },
@@ -96,6 +96,6 @@ export const WORKFLOW_DEFINITIONS = [
     validation, health: { status: 'healthy', checks: ['registry', 'workflow', 'integration', 'parameters', 'n8n-compatibility'] },
     runtimePolicy, repairCompatibility,
     complexity: 'high', status: 'stable', owner, supportedPlatforms: ['n8n'], n8nVersion,
-    documentation: 'docs/architecture.md', workflowPath: 'workflows/revops/signal-orchestration.workflow.json',
+    documentation: 'docs/revops-signal-engine.md', workflowPath: 'workflows/revops/signal-orchestration.workflow.json',
   },
 ] as const satisfies readonly WorkflowDefinition[]

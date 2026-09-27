@@ -97,6 +97,7 @@ export type IntegrationDefinition = {
   id: string
   name: string
   description: string
+  documentation: string
   authentication: AuthenticationType[]
   credentialType: string
   supportedActions: string[]

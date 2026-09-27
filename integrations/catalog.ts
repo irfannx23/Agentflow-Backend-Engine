@@ -4,6 +4,7 @@ import { LOCAL_SERVICE_POLICY, NON_IDEMPOTENT_WRITE_HTTP_POLICY, READ_HTTP_POLIC
 export const INTEGRATION_DEFINITIONS = [
   {
     id: 'hookdeck', name: 'Hookdeck', description: 'Webhook ingress, delivery, and retry boundary.',
+    documentation: 'docs/integrations.md#hookdeck',
     authentication: ['api-key', 'webhook'], credentialType: 'Hookdeck API key and signing secret',
     supportedActions: [], supportedTriggers: ['webhook'], supportedWorkflows: ['pre-crm.lead-qualification'],
     environmentVariables: ['HOOKDECK_API_KEY', 'HOOKDECK_SIGNING_SECRET', 'HOOKDECK_SOURCE_URL'],
@@ -12,6 +13,7 @@ export const INTEGRATION_DEFINITIONS = [
   },
   {
     id: 'supabase', name: 'Supabase', description: 'Existing persistence and RPC platform for GTM and RevOps state.',
+    documentation: 'docs/integrations.md#supabase',
     authentication: ['api-key', 'bearer'], credentialType: 'Supabase service credential',
     supportedActions: ['call-supabase-rpc'], supportedTriggers: ['supabase-change', 'database-change'],
     supportedWorkflows: ['pre-crm.lead-qualification', 'pre-crm.reply-to-deal', 'revops.signal-orchestration'],
@@ -21,6 +23,7 @@ export const INTEGRATION_DEFINITIONS = [
   },
   {
     id: 'emailable', name: 'Emailable', description: 'Email deliverability verification provider.',
+    documentation: 'docs/integrations.md#emailable',
     authentication: ['api-key'], credentialType: 'Provider API key', supportedActions: ['validate-email'], supportedTriggers: [],
     supportedWorkflows: ['pre-crm.lead-qualification'], environmentVariables: ['EMAIL_VERIFY_API_KEY', 'EMAIL_VERIFY_BASE_URL'],
     secretEnvironmentVariables: ['EMAIL_VERIFY_API_KEY'], credentialAdapterId: 'emailable-api-key', defaultRuntimePolicy: READ_HTTP_POLICY,
@@ -28,6 +31,7 @@ export const INTEGRATION_DEFINITIONS = [
   },
   {
     id: 'mx', name: 'MX Service', description: 'Local reusable MX record validation service.',
+    documentation: 'docs/integrations.md#mx-service',
     authentication: ['none'], credentialType: 'No secret credential', supportedActions: ['validate-email'], supportedTriggers: [],
     supportedWorkflows: ['pre-crm.lead-qualification'], environmentVariables: ['MX_SERVICE_PORT'],
     secretEnvironmentVariables: [], credentialAdapterId: 'none', defaultRuntimePolicy: LOCAL_SERVICE_POLICY,
@@ -35,6 +39,7 @@ export const INTEGRATION_DEFINITIONS = [
   },
   {
     id: 'apollo', name: 'Apollo', description: 'Company and firmographic enrichment provider.',
+    documentation: 'docs/integrations.md#apollo',
     authentication: ['api-key'], credentialType: 'Provider API key', supportedActions: ['enrich-lead'], supportedTriggers: [],
     supportedWorkflows: ['pre-crm.lead-qualification'], environmentVariables: ['ENRICH_API_KEY', 'ENRICH_BASE_URL'],
     secretEnvironmentVariables: ['ENRICH_API_KEY'], credentialAdapterId: 'apollo-api-key', defaultRuntimePolicy: READ_HTTP_POLICY,
@@ -42,6 +47,7 @@ export const INTEGRATION_DEFINITIONS = [
   },
   {
     id: 'gemini', name: 'Google Gemini', description: 'Structured AI scoring and content generation provider.',
+    documentation: 'docs/integrations.md#google-gemini',
     authentication: ['api-key'], credentialType: 'Google AI API key', supportedActions: ['generate-ai-content'], supportedTriggers: ['ai-event'],
     supportedWorkflows: ['pre-crm.lead-qualification'], environmentVariables: ['GEMINI_API_KEY', 'GEMINI_ENDPOINT', 'GEMINI_MODEL'],
     secretEnvironmentVariables: ['GEMINI_API_KEY'], credentialAdapterId: 'gemini-api-key', defaultRuntimePolicy: NON_IDEMPOTENT_WRITE_HTTP_POLICY,
@@ -49,6 +55,7 @@ export const INTEGRATION_DEFINITIONS = [
   },
   {
     id: 'hubspot', name: 'HubSpot', description: 'CRM contact, deal, and lifecycle synchronization.',
+    documentation: 'docs/integrations.md#hubspot',
     authentication: ['bearer', 'oauth2'], credentialType: 'Private app token or OAuth connection',
     supportedActions: ['create-contact', 'update-deal', 'update-crm'], supportedTriggers: ['hubspot-event'],
     supportedWorkflows: ['pre-crm.lead-qualification', 'pre-crm.reply-to-deal', 'revops.signal-orchestration'],
@@ -58,6 +65,7 @@ export const INTEGRATION_DEFINITIONS = [
   },
   {
     id: 'slack', name: 'Slack', description: 'Operational notifications and event callbacks.',
+    documentation: 'docs/integrations.md#slack',
     authentication: ['webhook', 'oauth2'], credentialType: 'Incoming webhook or OAuth connection',
     supportedActions: ['send-slack-message'], supportedTriggers: ['slack-event'],
     supportedWorkflows: ['pre-crm.lead-qualification', 'pre-crm.reply-to-deal', 'revops.signal-orchestration'],
@@ -66,6 +74,7 @@ export const INTEGRATION_DEFINITIONS = [
   },
   {
     id: 'brevo', name: 'Brevo', description: 'Transactional and nurture email delivery.',
+    documentation: 'docs/integrations.md#brevo',
     authentication: ['api-key'], credentialType: 'Provider API key', supportedActions: ['send-email'], supportedTriggers: [],
     supportedWorkflows: ['pre-crm.lead-qualification'],
     environmentVariables: ['BREVO_API_KEY', 'BREVO_BASE_URL', 'BREVO_SENDER_NAME', 'BREVO_SENDER_EMAIL'],
@@ -74,6 +83,7 @@ export const INTEGRATION_DEFINITIONS = [
   },
   {
     id: 'litellm', name: 'LiteLLM', description: 'Optional local model gateway for normalized provider access.',
+    documentation: 'docs/integrations.md#litellm',
     authentication: ['api-key'], credentialType: 'Gateway master key', supportedActions: ['generate-ai-content'], supportedTriggers: [],
     supportedWorkflows: [], environmentVariables: ['LITELLM_MASTER_KEY'],
     secretEnvironmentVariables: ['LITELLM_MASTER_KEY'], credentialAdapterId: 'litellm-master-key', defaultRuntimePolicy: NON_IDEMPOTENT_WRITE_HTTP_POLICY,
@@ -81,6 +91,7 @@ export const INTEGRATION_DEFINITIONS = [
   },
   {
     id: 'deepseek', name: 'DeepSeek', description: 'AI provider available through the LiteLLM adapter.',
+    documentation: 'docs/integrations.md#deepseek',
     authentication: ['api-key'], credentialType: 'Provider API key', supportedActions: ['generate-ai-content'], supportedTriggers: ['ai-event'],
     supportedWorkflows: [], environmentVariables: ['DEEPSEEK_API_KEY', 'DEEPSEEK_BASE_URL', 'DEEPSEEK_MODEL'],
     secretEnvironmentVariables: ['DEEPSEEK_API_KEY'], credentialAdapterId: 'deepseek-api-key', defaultRuntimePolicy: NON_IDEMPOTENT_WRITE_HTTP_POLICY,

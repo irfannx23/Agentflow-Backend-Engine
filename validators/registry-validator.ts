@@ -1,14 +1,32 @@
+import { access } from 'node:fs/promises'
+import { resolve } from 'node:path'
+
 import type { ValidationIssue, ValidationResult } from '../core/types.js'
 import { actionRegistry, integrationRegistry, triggerRegistry, workflowRegistry } from '../registry/index.js'
 import { requireCredentialAdapter } from '../integrations/credential-adapters.js'
 import { extractEnvironmentReferences, loadPortableWorkflow } from '../runtime/workflow-loader.js'
 import { validateN8nWorkflow } from './n8n-workflow-validator.js'
+import { ENGINE_ROOT } from '../runtime/paths.js'
+
+async function requireDocument(pathWithAnchor: string, ownerId: string, errors: ValidationIssue[]): Promise<void> {
+  const path = pathWithAnchor.split('#', 1)[0]
+  if (!path) {
+    errors.push({ code: 'missing_documentation_path', message: `${ownerId} has no documentation path.` })
+    return
+  }
+  try {
+    await access(resolve(ENGINE_ROOT, path))
+  } catch {
+    errors.push({ code: 'documentation_not_found', message: `${ownerId} references missing ${path}.` })
+  }
+}
 
 export async function validateRegistries(): Promise<ValidationResult> {
   const errors: ValidationIssue[] = []
   const warnings: ValidationIssue[] = []
 
   for (const workflowDefinition of workflowRegistry.list()) {
+    await requireDocument(workflowDefinition.documentation, workflowDefinition.id, errors)
     for (const triggerId of workflowDefinition.triggerTypes) {
       if (!triggerRegistry.get(triggerId)) errors.push({ code: 'unknown_trigger', message: `${workflowDefinition.id} references ${triggerId}` })
     }
@@ -51,13 +69,35 @@ export async function validateRegistries(): Promise<ValidationResult> {
   }
 
   for (const action of actionRegistry.list()) {
+    for (const workflowId of action.supportedWorkflows) {
+      if (!workflowRegistry.get(workflowId)) errors.push({ code: 'unknown_action_workflow', message: `${action.id} references ${workflowId}` })
+    }
     for (const integrationId of action.integrationIds) {
-      if (!integrationRegistry.get(integrationId)) errors.push({ code: 'unknown_action_integration', message: `${action.id} references ${integrationId}` })
+      const integration = integrationRegistry.get(integrationId)
+      if (!integration) errors.push({ code: 'unknown_action_integration', message: `${action.id} references ${integrationId}` })
+      else if (!(integration.supportedActions as readonly string[]).includes(action.id)) {
+        errors.push({ code: 'integration_action_mismatch', message: `${action.id} is not declared by ${integrationId}.` })
+      }
     }
   }
 
+  for (const trigger of triggerRegistry.list()) {
+    for (const workflowId of trigger.supportedWorkflows) {
+      if (!workflowRegistry.get(workflowId)) errors.push({ code: 'unknown_trigger_workflow', message: `${trigger.id} references ${workflowId}` })
+    }
+  }
 
   for (const integration of integrationRegistry.list()) {
+    await requireDocument(integration.documentation, integration.id, errors)
+    for (const workflowId of integration.supportedWorkflows) {
+      if (!workflowRegistry.get(workflowId)) errors.push({ code: 'unknown_integration_workflow', message: `${integration.id} references ${workflowId}` })
+    }
+    for (const actionId of integration.supportedActions) {
+      if (!actionRegistry.get(actionId)) errors.push({ code: 'unknown_integration_action', message: `${integration.id} references ${actionId}` })
+    }
+    for (const triggerId of integration.supportedTriggers) {
+      if (!triggerRegistry.get(triggerId)) errors.push({ code: 'unknown_integration_trigger', message: `${integration.id} references ${triggerId}` })
+    }
     try {
       const adapter = requireCredentialAdapter(integration.credentialAdapterId)
       if (adapter.integrationId !== integration.id && adapter.id !== 'none') {
