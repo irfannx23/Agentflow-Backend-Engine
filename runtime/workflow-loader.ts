@@ -3,6 +3,7 @@ import { resolve } from 'node:path'
 
 import type { N8nWorkflow, WorkflowDefinition } from '../core/types.js'
 import { ENGINE_ROOT } from './paths.js'
+import { standardizeWorkflow } from './workflow-standardizer.js'
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
@@ -21,6 +22,10 @@ export async function loadWorkflow(definition: WorkflowDefinition): Promise<N8nW
   const absolutePath = resolve(ENGINE_ROOT, definition.workflowPath)
   if (!absolutePath.startsWith(ENGINE_ROOT)) throw new Error(`workflow_path_outside_engine:${definition.id}`)
   return parseWorkflowJson(await readFile(absolutePath, 'utf8'))
+}
+
+export async function loadPortableWorkflow(definition: WorkflowDefinition): Promise<N8nWorkflow> {
+  return standardizeWorkflow(await loadWorkflow(definition), definition)
 }
 
 export function extractEnvironmentReferences(workflow: N8nWorkflow): string[] {

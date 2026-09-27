@@ -34,6 +34,7 @@ export type RevOpsSignalCategory =
   | 'risk'
   | 'power-user'
   | 'customer-success'
+  | 'usage-intelligence'
   | 'operational'
 
 export type SignalPriority = 'low' | 'medium' | 'high' | 'critical'

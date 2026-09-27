@@ -1,6 +1,7 @@
 export type WorkflowCategory = 'pre-crm' | 'gtm' | 'revops' | 'ai-automation'
 export type WorkflowComplexity = 'low' | 'medium' | 'high' | 'very-high'
 export type WorkflowStatus = 'stable' | 'candidate' | 'prototype' | 'deprecated'
+export type WorkflowHealthStatus = 'healthy' | 'degraded' | 'unvalidated'
 export type SupportedPlatform = 'n8n' | 'make'
 export type AuthenticationType = 'none' | 'api-key' | 'bearer' | 'oauth2' | 'basic' | 'webhook'
 
@@ -10,6 +11,30 @@ export type CredentialRequirement = {
   integrationId: string
   authentication: AuthenticationType
   configuredAtRuntime: boolean
+}
+
+export type RetryPolicy = {
+  enabled: boolean
+  maxAttempts: number
+  waitBetweenAttemptsMs: number
+  retrySafe: boolean
+}
+
+export type RuntimePolicy = {
+  timeoutMs: number
+  retry: RetryPolicy
+  errorMode: 'stop' | 'continue-regular-output' | 'continue-error-output'
+}
+
+export type WorkflowHealth = {
+  status: WorkflowHealthStatus
+  checks: string[]
+}
+
+export type RepairCompatibility = {
+  preservesNodeNames: boolean
+  preservesRpcContracts: boolean
+  preservesConnectionTopology: boolean
 }
 
 export type WorkflowDefinition = {
@@ -22,6 +47,13 @@ export type WorkflowDefinition = {
   supportedIntegrations: string[]
   requiredCredentials: CredentialRequirement[]
   requiredEnvironmentVariables: string[]
+  optionalEnvironmentVariables: string[]
+  inputSchema: FieldDefinition[]
+  outputSchema: FieldDefinition[]
+  validation: string[]
+  health: WorkflowHealth
+  runtimePolicy: RuntimePolicy
+  repairCompatibility: RepairCompatibility
   complexity: WorkflowComplexity
   status: WorkflowStatus
   owner: 'agentflow-backend-engine'
@@ -71,6 +103,9 @@ export type IntegrationDefinition = {
   supportedTriggers: string[]
   supportedWorkflows: string[]
   environmentVariables: string[]
+  secretEnvironmentVariables: string[]
+  credentialAdapterId: string
+  defaultRuntimePolicy: RuntimePolicy
   validation: string[]
 }
 
@@ -81,6 +116,10 @@ export type N8nNode = {
   typeVersion?: number
   parameters?: Record<string, unknown>
   position?: [number, number]
+  retryOnFail?: boolean
+  maxTries?: number
+  waitBetweenTries?: number
+  onError?: 'stopWorkflow' | 'continueRegularOutput' | 'continueErrorOutput'
 }
 
 export type N8nConnectionTarget = {

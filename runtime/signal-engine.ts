@@ -3,6 +3,10 @@ import {
   type AgentFlowProductEvent,
   type DetectedSignal,
 } from '../core/product-signals.js'
+import {
+  DATABASE_SIGNAL_DEFINITIONS,
+  type PersistedRevOpsSignal,
+} from '../core/revops/contracts/database-signals.js'
 
 const directSignals = new Map<AgentFlowProductEvent['name'], string>([
   ['project_created', 'activation.project-created'],
@@ -98,4 +102,27 @@ export function evaluateProductSignals(events: readonly AgentFlowProductEvent[])
 
   const knownDefinitions = new Set<string>(REVOPS_SIGNAL_DEFINITIONS.map((definition) => definition.id))
   return results.filter((result) => knownDefinitions.has(result.definitionId))
+}
+
+export function normalizePersistedRevOpsSignals(
+  signals: readonly PersistedRevOpsSignal[],
+): DetectedSignal[] {
+  const definitions = new Map(DATABASE_SIGNAL_DEFINITIONS.map((definition) => [definition.signalType, definition]))
+  const seen = new Set<string>()
+  const normalized: DetectedSignal[] = []
+
+  for (const signal of [...signals].sort((left, right) => left.createdAt.localeCompare(right.createdAt))) {
+    if (seen.has(signal.signalKey)) continue
+    seen.add(signal.signalKey)
+    const definition = definitions.get(signal.signalType)
+    if (!definition) continue
+    normalized.push({
+      definitionId: definition.definitionId,
+      workspaceId: signal.accountId,
+      detectedAt: signal.createdAt,
+      sourceEventIds: [signal.id],
+    })
+  }
+
+  return normalized
 }

@@ -12,6 +12,9 @@
 6. `runtime` loads registered workflows, reads runtime configuration, and evaluates product events.
 7. `engines` groups existing capabilities into Pre-CRM, GTM, and RevOps domains.
 8. `workflows` stores the real migrated workflow JSON used for compatibility testing.
+9. `builders` and `integrations/credential-adapters.ts` generate portable node parameters and environment-backed credential expressions.
+10. `runtime/workflow-standardizer.ts` applies timeout, retry, and error policies to a runtime copy without rewriting source workflow logic.
+11. `validators` enforce registry, topology, parameter, credential, environment, and n8n compatibility contracts.
 
 The registries are metadata and validation boundaries. They do not execute marketing campaigns, send messages, or alter external systems by themselves.
 

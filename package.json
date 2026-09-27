@@ -9,6 +9,7 @@
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "lint": "eslint . --max-warnings=0",
     "test": "pnpm build && node --test dist/testing/*.test.js",
+    "validate:engine": "pnpm build && node --test dist/testing/registry.test.js dist/testing/workflow-validation.test.js dist/testing/production-engine.test.js",
     "validate:legacy": "node validators/validate_pre_crm_workflows.cjs"
   },
   "engines": {

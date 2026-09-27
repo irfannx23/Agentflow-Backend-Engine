@@ -1,4 +1,5 @@
 import type { IntegrationDefinition } from '../core/types.js'
+import { LOCAL_SERVICE_POLICY, NON_IDEMPOTENT_WRITE_HTTP_POLICY, READ_HTTP_POLICY } from './runtime-policies.js'
 
 export const INTEGRATION_DEFINITIONS = [
   {
@@ -6,6 +7,7 @@ export const INTEGRATION_DEFINITIONS = [
     authentication: ['api-key', 'webhook'], credentialType: 'Hookdeck API key and signing secret',
     supportedActions: [], supportedTriggers: ['webhook'], supportedWorkflows: ['pre-crm.lead-qualification'],
     environmentVariables: ['HOOKDECK_API_KEY', 'HOOKDECK_SIGNING_SECRET', 'HOOKDECK_SOURCE_URL'],
+    secretEnvironmentVariables: ['HOOKDECK_API_KEY', 'HOOKDECK_SIGNING_SECRET'], credentialAdapterId: 'hookdeck-signature', defaultRuntimePolicy: READ_HTTP_POLICY,
     validation: ['verify signatures when enabled', 'deduplicate delivery identifiers'],
   },
   {
@@ -14,30 +16,35 @@ export const INTEGRATION_DEFINITIONS = [
     supportedActions: ['call-supabase-rpc'], supportedTriggers: ['supabase-change', 'database-change'],
     supportedWorkflows: ['pre-crm.lead-qualification', 'pre-crm.reply-to-deal', 'revops.signal-orchestration'],
     environmentVariables: ['SUPABASE_URL', 'SUPABASE_SERVICE_ROLE_KEY'],
+    secretEnvironmentVariables: ['SUPABASE_SERVICE_ROLE_KEY'], credentialAdapterId: 'supabase-service-role', defaultRuntimePolicy: READ_HTTP_POLICY,
     validation: ['URL must be HTTPS outside local development', 'service credentials must remain server-side', 'RPC must already exist'],
   },
   {
     id: 'emailable', name: 'Emailable', description: 'Email deliverability verification provider.',
     authentication: ['api-key'], credentialType: 'Provider API key', supportedActions: ['validate-email'], supportedTriggers: [],
     supportedWorkflows: ['pre-crm.lead-qualification'], environmentVariables: ['EMAIL_VERIFY_API_KEY', 'EMAIL_VERIFY_BASE_URL'],
+    secretEnvironmentVariables: ['EMAIL_VERIFY_API_KEY'], credentialAdapterId: 'emailable-api-key', defaultRuntimePolicy: READ_HTTP_POLICY,
     validation: ['base URL must be HTTPS', 'provider verdict must be normalized'],
   },
   {
     id: 'mx', name: 'MX Service', description: 'Local reusable MX record validation service.',
     authentication: ['none'], credentialType: 'No secret credential', supportedActions: ['validate-email'], supportedTriggers: [],
     supportedWorkflows: ['pre-crm.lead-qualification'], environmentVariables: ['MX_SERVICE_PORT'],
+    secretEnvironmentVariables: [], credentialAdapterId: 'none', defaultRuntimePolicy: LOCAL_SERVICE_POLICY,
     validation: ['domain must be normalized', 'DNS failures must fail closed'],
   },
   {
     id: 'apollo', name: 'Apollo', description: 'Company and firmographic enrichment provider.',
     authentication: ['api-key'], credentialType: 'Provider API key', supportedActions: ['enrich-lead'], supportedTriggers: [],
     supportedWorkflows: ['pre-crm.lead-qualification'], environmentVariables: ['ENRICH_API_KEY', 'ENRICH_BASE_URL'],
+    secretEnvironmentVariables: ['ENRICH_API_KEY'], credentialAdapterId: 'apollo-api-key', defaultRuntimePolicy: READ_HTTP_POLICY,
     validation: ['domain must be present', 'response fields must be allowlisted'],
   },
   {
     id: 'gemini', name: 'Google Gemini', description: 'Structured AI scoring and content generation provider.',
     authentication: ['api-key'], credentialType: 'Google AI API key', supportedActions: ['generate-ai-content'], supportedTriggers: ['ai-event'],
     supportedWorkflows: ['pre-crm.lead-qualification'], environmentVariables: ['GEMINI_API_KEY', 'GEMINI_ENDPOINT', 'GEMINI_MODEL'],
+    secretEnvironmentVariables: ['GEMINI_API_KEY'], credentialAdapterId: 'gemini-api-key', defaultRuntimePolicy: NON_IDEMPOTENT_WRITE_HTTP_POLICY,
     validation: ['model must be configured', 'responses must satisfy the declared JSON contract'],
   },
   {
@@ -46,6 +53,7 @@ export const INTEGRATION_DEFINITIONS = [
     supportedActions: ['create-contact', 'update-deal', 'update-crm'], supportedTriggers: ['hubspot-event'],
     supportedWorkflows: ['pre-crm.lead-qualification', 'pre-crm.reply-to-deal', 'revops.signal-orchestration'],
     environmentVariables: ['HUBSPOT_ACCESS_TOKEN', 'HUBSPOT_BASE_URL'],
+    secretEnvironmentVariables: ['HUBSPOT_ACCESS_TOKEN'], credentialAdapterId: 'hubspot-bearer', defaultRuntimePolicy: NON_IDEMPOTENT_WRITE_HTTP_POLICY,
     validation: ['token must remain server-side', 'object and property IDs must be valid'],
   },
   {
@@ -54,24 +62,28 @@ export const INTEGRATION_DEFINITIONS = [
     supportedActions: ['send-slack-message'], supportedTriggers: ['slack-event'],
     supportedWorkflows: ['pre-crm.lead-qualification', 'pre-crm.reply-to-deal', 'revops.signal-orchestration'],
     environmentVariables: ['SLACK_WEBHOOK_URL'], validation: ['destination must be configured', 'messages must not contain secrets'],
+    secretEnvironmentVariables: ['SLACK_WEBHOOK_URL'], credentialAdapterId: 'slack-webhook', defaultRuntimePolicy: NON_IDEMPOTENT_WRITE_HTTP_POLICY,
   },
   {
     id: 'brevo', name: 'Brevo', description: 'Transactional and nurture email delivery.',
     authentication: ['api-key'], credentialType: 'Provider API key', supportedActions: ['send-email'], supportedTriggers: [],
     supportedWorkflows: ['pre-crm.lead-qualification'],
     environmentVariables: ['BREVO_API_KEY', 'BREVO_BASE_URL', 'BREVO_SENDER_NAME', 'BREVO_SENDER_EMAIL'],
+    secretEnvironmentVariables: ['BREVO_API_KEY'], credentialAdapterId: 'brevo-api-key', defaultRuntimePolicy: NON_IDEMPOTENT_WRITE_HTTP_POLICY,
     validation: ['sender must be verified', 'recipient must pass qualification gates'],
   },
   {
     id: 'litellm', name: 'LiteLLM', description: 'Optional local model gateway for normalized provider access.',
     authentication: ['api-key'], credentialType: 'Gateway master key', supportedActions: ['generate-ai-content'], supportedTriggers: [],
     supportedWorkflows: [], environmentVariables: ['LITELLM_MASTER_KEY'],
+    secretEnvironmentVariables: ['LITELLM_MASTER_KEY'], credentialAdapterId: 'litellm-master-key', defaultRuntimePolicy: NON_IDEMPOTENT_WRITE_HTTP_POLICY,
     validation: ['gateway must be private', 'model alias must be registered'],
   },
   {
     id: 'deepseek', name: 'DeepSeek', description: 'AI provider available through the LiteLLM adapter.',
     authentication: ['api-key'], credentialType: 'Provider API key', supportedActions: ['generate-ai-content'], supportedTriggers: ['ai-event'],
     supportedWorkflows: [], environmentVariables: ['DEEPSEEK_API_KEY', 'DEEPSEEK_BASE_URL', 'DEEPSEEK_MODEL'],
+    secretEnvironmentVariables: ['DEEPSEEK_API_KEY'], credentialAdapterId: 'deepseek-api-key', defaultRuntimePolicy: NON_IDEMPOTENT_WRITE_HTTP_POLICY,
     validation: ['base URL must be HTTPS', 'model must be registered through the gateway'],
   },
 ] as const satisfies readonly IntegrationDefinition[]

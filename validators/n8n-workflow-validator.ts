@@ -1,10 +1,18 @@
 import type { N8nWorkflow, ValidationIssue, ValidationResult } from '../core/types.js'
+import { validateNodeParameters } from './node-parameter-validator.js'
 
 function issue(code: string, message: string, path?: string): ValidationIssue {
   return path ? { code, message, path } : { code, message }
 }
 
-export function validateN8nWorkflow(workflow: N8nWorkflow): ValidationResult {
+export type N8nValidationOptions = {
+  requireRuntimePolicies?: boolean
+}
+
+export function validateN8nWorkflow(
+  workflow: N8nWorkflow,
+  options: N8nValidationOptions = {},
+): ValidationResult {
   const errors: ValidationIssue[] = []
   const warnings: ValidationIssue[] = []
   const nodeNames = new Set<string>()
@@ -30,6 +38,10 @@ export function validateN8nWorkflow(workflow: N8nWorkflow): ValidationResult {
       const url = node.parameters?.url
       if (typeof url !== 'string' || !url.trim()) errors.push(issue('empty_http_url', `HTTP node ${node.name} requires a URL.`, `${path}.parameters.url`))
     }
+
+    const parameterValidation = validateNodeParameters(node, path, options.requireRuntimePolicies ?? false)
+    errors.push(...parameterValidation.errors)
+    warnings.push(...parameterValidation.warnings)
   })
 
   for (const [source, connectionGroups] of Object.entries(workflow.connections)) {
@@ -42,6 +54,15 @@ export function validateN8nWorkflow(workflow: N8nWorkflow): ValidationResult {
           }
         }
       }
+    }
+  }
+
+  for (const nodeName of nodeNames) {
+    const connected = Object.hasOwn(workflow.connections, nodeName)
+      || Object.values(workflow.connections).some((groups) => Object.values(groups)
+        .some((lanes) => lanes.some((lane) => lane.some((target) => target.node === nodeName))))
+    if (!connected && workflow.nodes.length > 1) {
+      warnings.push(issue('disconnected_node', `Node is not connected: ${nodeName}`, 'connections'))
     }
   }
 

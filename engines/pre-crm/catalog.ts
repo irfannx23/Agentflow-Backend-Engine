@@ -3,6 +3,8 @@ import type { EngineModuleDefinition } from '../../core/module-types.js'
 const workflowId = 'pre-crm.lead-qualification'
 
 export const PRE_CRM_MODULES = [
+  { id: 'lead-ingestion', name: 'Lead Ingestion', description: 'Sanitize and normalize inbound and outbound lead payloads before persistence.', status: 'available', sourcePaths: ['core/pre-crm/n8n-code-nodes/n8n-ingestion-sanitize.js'], workflowIds: [workflowId] },
+  { id: 'deduplication', name: 'Deduplication', description: 'Reuse the existing get_or_create_lead RPC contract for event and normalized-email idempotency.', status: 'available', sourcePaths: ['workflows/pre-crm/lead-qualification.workflow.json'], workflowIds: [workflowId] },
   { id: 'anti-abuse', name: 'Anti-Abuse', description: 'Reject automated, flooded, or invalid submissions.', status: 'available', sourcePaths: ['core/pre-crm/n8n-code-nodes/n8n-anti-abuse.js', 'core/pre-crm/n8n-code-nodes/n8n-turnstile-parse.js'], workflowIds: [workflowId] },
   { id: 'verification', name: 'Verification', description: 'Normalize email deliverability and MX verification.', status: 'available', sourcePaths: ['core/pre-crm/n8n-code-nodes/n8n-verify-parse.js', 'integrations/mx-service/mx-check.ts'], workflowIds: [workflowId] },
   { id: 'enrichment', name: 'Enrichment', description: 'Normalize company and firmographic enrichment.', status: 'available', sourcePaths: ['core/pre-crm/n8n-code-nodes/n8n-enrich-parse.js'], workflowIds: [workflowId] },
@@ -12,4 +14,5 @@ export const PRE_CRM_MODULES = [
   { id: 'outreach', name: 'Outreach', description: 'Build and parse structured first-touch outreach.', status: 'available', sourcePaths: ['core/pre-crm/n8n-code-nodes/n8n-outreach-prompt.js', 'core/pre-crm/n8n-code-nodes/n8n-outreach-parse.js'], workflowIds: [workflowId] },
   { id: 'nurture', name: 'Nurture', description: 'Build and parse qualified nurture content.', status: 'available', sourcePaths: ['core/pre-crm/n8n-code-nodes/n8n-nurture-prompt.js', 'core/pre-crm/n8n-code-nodes/n8n-nurture-parse.js'], workflowIds: [workflowId] },
   { id: 'reply-detection', name: 'Reply Detection', description: 'Normalize replied outreach into workflow items.', status: 'available', sourcePaths: ['core/pre-crm/n8n-code-nodes/n8n-reply-split.js'], workflowIds: ['pre-crm.reply-to-deal'] },
+  { id: 'outbound-gate', name: 'Outbound Gate', description: 'Apply existing verification, jurisdiction, and contactability gates before outreach.', status: 'available', sourcePaths: ['core/pre-crm/n8n-code-nodes/n8n-outbound-gate.js', 'core/pre-crm/n8n-code-nodes/n8n-jurisdiction-check.js'], workflowIds: [workflowId] },
 ] as const satisfies readonly EngineModuleDefinition[]
