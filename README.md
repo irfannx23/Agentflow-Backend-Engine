@@ -18,6 +18,18 @@ The repository owns workflow definitions, typed registries, triggers, actions, i
 
 ## Architecture
 
+### Overall Backend Architecture
+
+![Overall Backend Architecture](docs/overall-backend-architecture.png)
+
+### Lead Qualification / Pre-CRM
+
+![Lead Qualification Flow](docs/lead-qualification-precrm-flow.png)
+
+### RevOps Signal Intelligence
+
+![RevOps Signal Flow](docs/revops-signal-flow.png)
+
 ```text
 core/          Reusable domain contracts and copied automation modules
 workflows/     Registered workflow JSON and templates
