@@ -1,21 +1,21 @@
 {
   "id": "1",
-  "name": "Pre-CRM Ingestion \u2014 Hookdeck \u2192 Sanitize \u2192 Gate \u2192 Verify \u2192 Enrich \u2192 Jurisdiction \u2192 AI Score \u2192 CRM/Slack",
+  "name": "Lead Qualification",
   "nodes": [
     {
-      "id": "webhook-hookdeck",
-      "name": "Webhook - Hookdeck Ingest",
+      "id": "webhook-backend-ingest",
+      "name": "Webhook - Backend Ingest",
       "type": "n8n-nodes-base.webhook",
       "typeVersion": 2,
       "position": [
         0,
         0
       ],
-      "webhookId": "pre-crm-hookdeck-lead-ingest",
+      "webhookId": "agentflow-lead-qualification-webhook",
       "parameters": {
         "httpMethod": "POST",
-        "path": "hookdeck-lead-ingest",
-        "responseMode": "onReceived",
+        "path": "agentflow-lead-qualification",
+        "responseMode": "responseNode",
         "options": {
           "responseHeaders": {
             "entries": [
@@ -41,7 +41,7 @@
       "parameters": {
         "httpMethod": "POST",
         "path": "outbound",
-        "responseMode": "onReceived",
+        "responseMode": "responseNode",
         "options": {
           "responseHeaders": {
             "entries": [
@@ -52,6 +52,155 @@
             ]
           }
         }
+      }
+    },
+    {
+      "id": "code-dispatch-auth",
+      "name": "Validate Backend Dispatch Secret",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        160,
+        100
+      ],
+      "parameters": {
+        "jsCode": "const expected = String($env.N8N_DISPATCH_SECRET || '');\nconst headers = $json.headers || {};\nconst supplied = String(headers['x-agentflow-dispatch-secret'] || headers['X-AgentFlow-Dispatch-Secret'] || '');\nreturn [{ json: { ...$json, dispatch_authorized: Boolean(expected && supplied && supplied === expected) } }];\n"
+      }
+    },
+    {
+      "id": "if-dispatch-authorized",
+      "name": "Backend Dispatch Authorized?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        240,
+        100
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "cond-dispatch-authorized",
+              "leftValue": "={{ $json.dispatch_authorized }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true"
+              }
+            }
+          ]
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "respond-dispatch-accepted",
+      "name": "Respond: Dispatch Accepted",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.5,
+      "position": [
+        320,
+        100
+      ],
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ { status: 'accepted' } }}",
+        "options": {
+          "responseCode": 202
+        }
+      }
+    },
+    {
+      "id": "respond-dispatch-unauthorized",
+      "name": "Respond: Unauthorized",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.5,
+      "position": [
+        320,
+        300
+      ],
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ { error: 'unauthorized' } }}",
+        "options": {
+          "responseCode": 401
+        }
+      }
+    },
+    {
+      "id": "rpc-count-ip-leads",
+      "name": "Anti-Abuse: Count Recent IP Leads",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 2,
+      "position": [
+        320,
+        100
+      ],
+      "parameters": {
+        "url": "={{ $env.SUPABASE_URL + '/rest/v1/rpc/count_leads_by_ip_since' }}",
+        "requestMethod": "POST",
+        "jsonParameters": true,
+        "headerParametersJson": "={{ JSON.stringify({ apikey: $env.SUPABASE_SERVICE_ROLE_KEY, Authorization: 'Bearer ' + $env.SUPABASE_SERVICE_ROLE_KEY }) }}",
+        "bodyParametersJson": "={{ JSON.stringify({ p_ip: (($('Validate Backend Dispatch Secret').first().json.body || {}).ip || $('Validate Backend Dispatch Secret').first().json.ip || ''), p_since: new Date(Date.now() - 10 * 60 * 1000).toISOString() }) }}",
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "json"
+            }
+          },
+          "timeout": 30000
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000,
+      "onError": "stopWorkflow"
+    },
+    {
+      "id": "rpc-count-daily-leads",
+      "name": "Anti-Abuse: Count Daily Leads",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 2,
+      "position": [
+        480,
+        100
+      ],
+      "parameters": {
+        "url": "={{ $env.SUPABASE_URL + '/rest/v1/rpc/count_events_since' }}",
+        "requestMethod": "POST",
+        "jsonParameters": true,
+        "headerParametersJson": "={{ JSON.stringify({ apikey: $env.SUPABASE_SERVICE_ROLE_KEY, Authorization: 'Bearer ' + $env.SUPABASE_SERVICE_ROLE_KEY }) }}",
+        "bodyParametersJson": "={{ JSON.stringify({ p_since: new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString() }) }}",
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "json"
+            }
+          },
+          "timeout": 30000
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000,
+      "onError": "stopWorkflow"
+    },
+    {
+      "id": "code-abuse-context",
+      "name": "Anti-Abuse: Attach Counters",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        640,
+        100
+      ],
+      "parameters": {
+        "jsCode": "const source = $('Validate Backend Dispatch Secret').first().json || {};\nconst unwrap = (value) => Array.isArray(value) ? (value[0] || {}) : (value || {});\nconst ipCount = Number(unwrap($('Anti-Abuse: Count Recent IP Leads').first().json).count || 0);\nconst dailyCount = Number(unwrap($('Anti-Abuse: Count Daily Leads').first().json).count || 0);\nconst body = source.body && typeof source.body === 'object' ? { ...source.body } : { ...source };\nbody.ip_flood_count = ipCount;\nbody.daily_count = dailyCount;\nreturn [{ json: source.body ? { ...source, body } : body }];\n"
       }
     },
     {
@@ -118,9 +267,14 @@
             "response": {
               "responseFormat": "json"
             }
-          }
+          },
+          "timeout": 30000
         }
-      }
+      },
+      "retryOnFail": false,
+      "maxTries": 1,
+      "waitBetweenTries": 0,
+      "onError": "stopWorkflow"
     },
     {
       "id": "code-sanitize",
@@ -132,7 +286,7 @@
         80
       ],
       "parameters": {
-        "jsCode": "/**\n * ============================================\n * n8n Code Node \u2014 Ingestion Sanitization\n * ============================================\n * Paste this into an n8n \"Code\" node (JavaScript mode).\n *\n * Purpose (Step 2: Ingestion Logic):\n *   1. Validate email domain format.\n *   2. Filter out temporary / disposable email providers\n *      (e.g. @tempmail.com, @mailinator.com, etc.).\n *   3. Strip malformed text string inputs from the incoming\n *      lead payload.\n *\n * Business rules (see .clinerules):\n *   * Sanitization: strip malformed text & personal domains\n *     (e.g. @gmail.com, @yahoo.com) before scoring.\n *   * Data privacy: use synthetic test payloads in dev.\n *\n * Input:  $input.first().json  (the inbound lead object)\n * Output: { json: { ...sanitizedLead, sanitized: true } }\n *         or { json: { ...lead, sanitized: false, reason } }\n *         when the lead is rejected.\n * ============================================\n */\n\n// Disposable / temporary email domains to block outright.\nconst TEMP_EMAIL_DOMAINS = new Set([\n  'tempmail.com',\n  'mailinator.com',\n  'guerrillamail.com',\n  '10minutemail.com',\n  'yopmail.com',\n  'throwawaymail.com',\n  'sharklasers.com',\n  'maildrop.cc',\n  'getnada.com',\n  'temp-mail.org',\n  'dispostable.com',\n  'mailnesia.com',\n  'trashmail.com',\n  'spamgourmet.com',\n  'mintemail.com',\n  'mailcatch.com',\n  'mytemp.email',\n  'tempinbox.com',\n  'fakeinbox.com',\n  'emailondeck.com',\n]);\n\n// Personal / consumer domains to strip before scoring.\nconst PERSONAL_DOMAINS = new Set([\n  'gmail.com',\n  'yahoo.com',\n  'yahoo.co.uk',\n  'hotmail.com',\n  'outlook.com',\n  'aol.com',\n  'icloud.com',\n  'me.com',\n  'protonmail.com',\n  'proton.me',\n  'zoho.com',\n  'gmx.com',\n  'mail.com',\n  'live.com',\n  'msn.com',\n]);\n\n// Student / academic domains to strip before scoring (anti-ICP Stage 5).\nconst STUDENT_DOMAINS = new Set([\n  'student.edu',\n  'university.edu',\n  'college.edu',\n  'academia.edu',\n  'students.edu',\n  'alumni.edu',\n  'edu',\n  'ac.uk',\n  'ac.in',\n  'edu.au',\n  'edu.cn',\n  'edu.sg',\n  'uni.edu',\n]);\n\n// Competitor / out-of-ICP company domains to block (anti-ICP Stage 5).\n// NOTE: keep this list current as the competitive set changes.\nconst COMPETITOR_DOMAINS = new Set([\n  'hubspot.com',\n  'salesforce.com',\n  'pipedrive.com',\n  'zoho.com',\n  'freshworks.com',\n  'intercom.com',\n  'drift.com',\n  'clearbit.com',\n  'clay.com',\n  'apollo.io',\n]);\n\n// Unsupported jurisdictions (anti-ICP Stage 5).\n// Country codes (ISO 3166-1 alpha-2) whose leads are auto-disqualified.\nconst BLOCKED_JURISDICTIONS = new Set([\n  'KP', // North Korea\n  'IR', // Iran\n  'CU', // Cuba\n  'SY', // Syria\n  'BY', // Belarus\n  'RU', // Russia\n  'VE', // Venezuela\n  'MM', // Myanmar\n  'SD', // Sudan\n  'ZW', // Zimbabwe\n]);\n\n// Common country names / aliases -> ISO code, so a payload carrying a country\n// NAME (e.g. \"Russia\", \"Russian Federation\") is blocked just like a code.\n// Keys are normalized: lowercase, letters/spaces only. Keep in sync with\n// n8n-jurisdiction-check.js (Stage 5 backstop node).\nconst COUNTRY_NAME_TO_CODE = {\n  'russia': 'RU',\n  'russian federation': 'RU',\n  'rf': 'RU',\n  'belarus': 'BY',\n  'belorussia': 'BY',\n  'iran': 'IR',\n  'islamic republic of iran': 'IR',\n  'persia': 'IR',\n  'north korea': 'KP',\n  'democratic peoples republic of korea': 'KP',\n  'dprk': 'KP',\n  'cuba': 'CU',\n  'syria': 'SY',\n  'syrian arab republic': 'SY',\n  'venezuela': 'VE',\n  'bolivarian republic of venezuela': 'VE',\n  'myanmar': 'MM',\n  'burma': 'MM',\n  'myanmar burma': 'MM',\n  'sudan': 'SD',\n  'zimbabwe': 'ZW',\n};\n\n/** Normalize a country name for lookup: lowercase, strip punctuation. */\nfunction normalizeCountryName(name) {\n  if (typeof name !== 'string') return '';\n  return name.toLowerCase().replace(/[^a-z ]/g, ' ').replace(/\\s+/g, ' ').trim();\n}\n\n/**\n * Resolve a country signal (ISO code and/or name) against the blocklist.\n * Returns { blocked, code } \u2014 code is the ISO alpha-2 code when blocked.\n */\nfunction resolveBlockedCountry(countryCode, countryName) {\n  if (typeof countryCode === 'string') {\n    const code = countryCode.trim().toUpperCase();\n    if (BLOCKED_JURISDICTIONS.has(code)) {\n      return { blocked: true, code };\n    }\n  }\n  const normalized = normalizeCountryName(countryName);\n  if (normalized && COUNTRY_NAME_TO_CODE[normalized]) {\n    const code = COUNTRY_NAME_TO_CODE[normalized];\n    if (BLOCKED_JURISDICTIONS.has(code)) {\n      return { blocked: true, code };\n    }\n  }\n  return { blocked: false, code: null };\n}\n\n// Basic RFC-ish email format check.\nconst EMAIL_REGEX = /^[^\\s@]+@[^\\s@]+\\.[^\\s@]{2,}$/;\n\n/**\n * Normalize a string: trim, collapse internal whitespace,\n * and strip control characters / malformed tokens.\n */\nfunction normalizeText(value) {\n  if (typeof value !== 'string') return value;\n  return value\n    .replace(/[\\u0000-\\u001F\\u007F]/g, ' ') // control chars\n    .replace(/\\s+/g, ' ')                    // collapse whitespace\n    .trim();\n}\n\n/**\n * Validate and sanitize an email address.\n * Returns { ok, email, domain, reason }.\n */\nfunction sanitizeEmail(email) {\n  if (typeof email !== 'string') {\n    return { ok: false, email: null, domain: null, reason: 'email_missing' };\n  }\n\n  const cleaned = email.trim().toLowerCase();\n  if (!EMAIL_REGEX.test(cleaned)) {\n    return { ok: false, email: null, domain: null, reason: 'email_invalid_format' };\n  }\n\n  const domain = cleaned.split('@')[1].toLowerCase();\n\n  if (TEMP_EMAIL_DOMAINS.has(domain)) {\n    return { ok: false, email: cleaned, domain, reason: 'temporary_email_provider' };\n  }\n\n  if (PERSONAL_DOMAINS.has(domain)) {\n    return { ok: false, email: cleaned, domain, reason: 'personal_domain' };\n  }\n\n  // Anti-ICP Stage 5 hard exclusions.\n  if (STUDENT_DOMAINS.has(domain) || domain.endsWith('.edu')) {\n    return { ok: false, email: cleaned, domain, reason: 'student_domain' };\n  }\n\n  if (COMPETITOR_DOMAINS.has(domain)) {\n    return { ok: false, email: cleaned, domain, reason: 'competitor_domain' };\n  }\n\n  return { ok: true, email: cleaned, domain, reason: null };\n}\n\n/**\n * Recursively strip malformed text from string fields in the\n * payload, preserving structure of nested objects/arrays.\n */\nfunction stripMalformedText(value) {\n  if (typeof value === 'string') {\n    return normalizeText(value);\n  }\n  if (Array.isArray(value)) {\n    return value.map(stripMalformedText);\n  }\n  if (value && typeof value === 'object') {\n    const out = {};\n    for (const key of Object.keys(value)) {\n      out[key] = stripMalformedText(value[key]);\n    }\n    return out;\n  }\n  return value;\n}\n\nfunction stableStringify(value) {\n  if (Array.isArray(value)) {\n    return `[${value.map(stableStringify).join(',')}]`;\n  }\n  if (value && typeof value === 'object') {\n    return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${stableStringify(value[key])}`).join(',')}}`;\n  }\n  return JSON.stringify(value);\n}\n\nfunction stableHash(value) {\n  let hash = 2166136261;\n  for (let i = 0; i < value.length; i += 1) {\n    hash ^= value.charCodeAt(i);\n    hash = Math.imul(hash, 16777619);\n  }\n  return (hash >>> 0).toString(16).padStart(8, '0');\n}\n\nfunction firstNonEmptyString(...values) {\n  for (const value of values) {\n    if (typeof value === 'string' && value.trim()) {\n      return value.trim();\n    }\n  }\n  return null;\n}\n\nfunction resolveIngestionEventId(raw, lead) {\n  const headers = raw && typeof raw.headers === 'object' ? raw.headers : {};\n  const existing = firstNonEmptyString(\n    lead.event_id,\n    lead.eventId,\n    lead.ingestion_event_id,\n    lead.hookdeck_event_id,\n    raw.event_id,\n    raw.eventId,\n    raw.id,\n    raw.hookdeck_event_id,\n    headers['x-hookdeck-eventid'],\n    headers['x-hookdeck-event-id'],\n    headers['x-event-id']\n  );\n  if (existing) return existing;\n\n  const seed = stableStringify({\n    source_type: lead.source_type || raw.source_type || 'inbound',\n    submitted_at: lead.submitted_at || lead.timestamp || lead.created_at || raw.timestamp || null,\n    payload: lead,\n  });\n  return `cp_ingest_${stableHash(seed)}`;\n}\n\n/**\n * Main entry point for the n8n Code node.\n */\n\n  // Hookdeck / n8n may wrap the payload in an envelope (headers/params/query/body);\n  // unwrap if present so we always operate on the lead object itself.\n  const raw = $input.first().json;\n  const lead = raw.body && typeof raw.body === 'object' ? raw.body : raw;\n\n  // 0. Strip malformed text FIRST \u2014 before any gate. Rejected leads (bad email,\n  //    blocked jurisdiction) also flow to Log Spam, and control characters\n  //    (\\u0000 etc.) crash Postgres with 22P05 if they reach the spam_log RPC.\n  const strippedLead = stripMalformedText(lead);\n  const eventId = resolveIngestionEventId(raw, strippedLead);\n\n  // 1. Sanitize the email next \u2014 gate everything else on it.\n  const emailCheck = sanitizeEmail(strippedLead.email);\n\n  if (!emailCheck.ok) {\n    return {\n      json: {\n        ...strippedLead,\n        sanitized: false,\n        reason: emailCheck.reason,\n        email: emailCheck.email || null,\n        event_id: eventId,\n      },\n    };\n  }\n\n  // Anti-ICP Stage 5: hard-exclude blocked jurisdictions when the payload\n  // carries a country signal (ISO code or name) \u2014 reject at the door so we\n  // never spend verification/enrichment credits on them.\n  const jurisdiction = resolveBlockedCountry(strippedLead.country_code, strippedLead.country);\n  if (jurisdiction.blocked) {\n    return {\n      json: {\n        ...strippedLead,\n        sanitized: false,\n        reason: 'blocked_jurisdiction',\n        email: emailCheck.email || null,\n        event_id: eventId,\n        country_code: jurisdiction.code,\n      },\n    };\n  }\n\n  // 2. Pass branch: lead is already stripped (step 0). Re-apply the validated\n  //    email (normalized + lowercased).\n  const sanitizedLead = { ...strippedLead, event_id: eventId };\n  sanitizedLead.email = emailCheck.email;\n\n  return {\n    json: {\n      ...sanitizedLead,\n      sanitized: true,\n      email_domain: emailCheck.domain,\n    },\n  };\n"
+        "jsCode": "/**\n * ============================================\n * n8n Code Node \u2014 Ingestion Sanitization\n * ============================================\n * Paste this into an n8n \"Code\" node (JavaScript mode).\n *\n * Purpose (Step 2: Ingestion Logic):\n *   1. Validate email domain format.\n *   2. Filter out temporary / disposable email providers\n *      (e.g. @tempmail.com, @mailinator.com, etc.).\n *   3. Strip malformed text string inputs from the incoming\n *      lead payload.\n *\n * Business rules (see .clinerules):\n *   * Sanitization: strip malformed text & personal domains\n *     (e.g. @gmail.com, @yahoo.com) before scoring.\n *   * Data privacy: use synthetic test payloads in dev.\n *\n * Input:  $input.first().json  (the inbound lead object)\n * Output: { json: { ...sanitizedLead, sanitized: true } }\n *         or { json: { ...lead, sanitized: false, reason } }\n *         when the lead is rejected.\n * ============================================\n */\n\n// Disposable / temporary email domains to block outright.\nconst TEMP_EMAIL_DOMAINS = new Set([\n  'tempmail.com',\n  'mailinator.com',\n  'guerrillamail.com',\n  '10minutemail.com',\n  'yopmail.com',\n  'throwawaymail.com',\n  'sharklasers.com',\n  'maildrop.cc',\n  'getnada.com',\n  'temp-mail.org',\n  'dispostable.com',\n  'mailnesia.com',\n  'trashmail.com',\n  'spamgourmet.com',\n  'mintemail.com',\n  'mailcatch.com',\n  'mytemp.email',\n  'tempinbox.com',\n  'fakeinbox.com',\n  'emailondeck.com',\n]);\n\n// Personal / consumer domains to strip before scoring.\nconst PERSONAL_DOMAINS = new Set([\n  'gmail.com',\n  'yahoo.com',\n  'yahoo.co.uk',\n  'hotmail.com',\n  'outlook.com',\n  'aol.com',\n  'icloud.com',\n  'me.com',\n  'protonmail.com',\n  'proton.me',\n  'zoho.com',\n  'gmx.com',\n  'mail.com',\n  'live.com',\n  'msn.com',\n]);\n\n// Student / academic domains to strip before scoring (anti-ICP Stage 5).\nconst STUDENT_DOMAINS = new Set([\n  'student.edu',\n  'university.edu',\n  'college.edu',\n  'academia.edu',\n  'students.edu',\n  'alumni.edu',\n  'edu',\n  'ac.uk',\n  'ac.in',\n  'edu.au',\n  'edu.cn',\n  'edu.sg',\n  'uni.edu',\n]);\n\n// Competitor / out-of-ICP company domains to block (anti-ICP Stage 5).\n// NOTE: keep this list current as the competitive set changes.\nconst COMPETITOR_DOMAINS = new Set([\n  'hubspot.com',\n  'salesforce.com',\n  'pipedrive.com',\n  'zoho.com',\n  'freshworks.com',\n  'intercom.com',\n  'drift.com',\n  'clearbit.com',\n  'clay.com',\n  'apollo.io',\n]);\n\n// Unsupported jurisdictions (anti-ICP Stage 5).\n// Country codes (ISO 3166-1 alpha-2) whose leads are auto-disqualified.\nconst BLOCKED_JURISDICTIONS = new Set([\n  'KP', // North Korea\n  'IR', // Iran\n  'CU', // Cuba\n  'SY', // Syria\n  'BY', // Belarus\n  'RU', // Russia\n  'VE', // Venezuela\n  'MM', // Myanmar\n  'SD', // Sudan\n  'ZW', // Zimbabwe\n]);\n\n// Common country names / aliases -> ISO code, so a payload carrying a country\n// NAME (e.g. \"Russia\", \"Russian Federation\") is blocked just like a code.\n// Keys are normalized: lowercase, letters/spaces only. Keep in sync with\n// n8n-jurisdiction-check.js (Stage 5 backstop node).\nconst COUNTRY_NAME_TO_CODE = {\n  'russia': 'RU',\n  'russian federation': 'RU',\n  'rf': 'RU',\n  'belarus': 'BY',\n  'belorussia': 'BY',\n  'iran': 'IR',\n  'islamic republic of iran': 'IR',\n  'persia': 'IR',\n  'north korea': 'KP',\n  'democratic peoples republic of korea': 'KP',\n  'dprk': 'KP',\n  'cuba': 'CU',\n  'syria': 'SY',\n  'syrian arab republic': 'SY',\n  'venezuela': 'VE',\n  'bolivarian republic of venezuela': 'VE',\n  'myanmar': 'MM',\n  'burma': 'MM',\n  'myanmar burma': 'MM',\n  'sudan': 'SD',\n  'zimbabwe': 'ZW',\n};\n\n/** Normalize a country name for lookup: lowercase, strip punctuation. */\nfunction normalizeCountryName(name) {\n  if (typeof name !== 'string') return '';\n  return name.toLowerCase().replace(/[^a-z ]/g, ' ').replace(/\\s+/g, ' ').trim();\n}\n\n/**\n * Resolve a country signal (ISO code and/or name) against the blocklist.\n * Returns { blocked, code } \u2014 code is the ISO alpha-2 code when blocked.\n */\nfunction resolveBlockedCountry(countryCode, countryName) {\n  if (typeof countryCode === 'string') {\n    const code = countryCode.trim().toUpperCase();\n    if (BLOCKED_JURISDICTIONS.has(code)) {\n      return { blocked: true, code };\n    }\n  }\n  const normalized = normalizeCountryName(countryName);\n  if (normalized && COUNTRY_NAME_TO_CODE[normalized]) {\n    const code = COUNTRY_NAME_TO_CODE[normalized];\n    if (BLOCKED_JURISDICTIONS.has(code)) {\n      return { blocked: true, code };\n    }\n  }\n  return { blocked: false, code: null };\n}\n\n// Basic RFC-ish email format check.\nconst EMAIL_REGEX = /^[^\\s@]+@[^\\s@]+\\.[^\\s@]{2,}$/;\n\n/**\n * Normalize a string: trim, collapse internal whitespace,\n * and strip control characters / malformed tokens.\n */\nfunction normalizeText(value) {\n  if (typeof value !== 'string') return value;\n  return value\n    .replace(/[\\u0000-\\u001F\\u007F]/g, ' ') // control chars\n    .replace(/\\s+/g, ' ')                    // collapse whitespace\n    .trim();\n}\n\n/**\n * Validate and sanitize an email address.\n * Returns { ok, email, domain, reason }.\n */\nfunction sanitizeEmail(email) {\n  if (typeof email !== 'string') {\n    return { ok: false, email: null, domain: null, reason: 'email_missing' };\n  }\n\n  const cleaned = email.trim().toLowerCase();\n  if (!EMAIL_REGEX.test(cleaned)) {\n    return { ok: false, email: null, domain: null, reason: 'email_invalid_format' };\n  }\n\n  const domain = cleaned.split('@')[1].toLowerCase();\n\n  if (TEMP_EMAIL_DOMAINS.has(domain)) {\n    return { ok: false, email: cleaned, domain, reason: 'temporary_email_provider' };\n  }\n\n  if (PERSONAL_DOMAINS.has(domain)) {\n    return { ok: false, email: cleaned, domain, reason: 'personal_domain' };\n  }\n\n  // Anti-ICP Stage 5 hard exclusions.\n  if (STUDENT_DOMAINS.has(domain) || domain.endsWith('.edu')) {\n    return { ok: false, email: cleaned, domain, reason: 'student_domain' };\n  }\n\n  if (COMPETITOR_DOMAINS.has(domain)) {\n    return { ok: false, email: cleaned, domain, reason: 'competitor_domain' };\n  }\n\n  return { ok: true, email: cleaned, domain, reason: null };\n}\n\n/**\n * Recursively strip malformed text from string fields in the\n * payload, preserving structure of nested objects/arrays.\n */\nfunction stripMalformedText(value) {\n  if (typeof value === 'string') {\n    return normalizeText(value);\n  }\n  if (Array.isArray(value)) {\n    return value.map(stripMalformedText);\n  }\n  if (value && typeof value === 'object') {\n    const out = {};\n    for (const key of Object.keys(value)) {\n      out[key] = stripMalformedText(value[key]);\n    }\n    return out;\n  }\n  return value;\n}\n\nfunction stableStringify(value) {\n  if (Array.isArray(value)) {\n    return `[${value.map(stableStringify).join(',')}]`;\n  }\n  if (value && typeof value === 'object') {\n    return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${stableStringify(value[key])}`).join(',')}}`;\n  }\n  return JSON.stringify(value);\n}\n\nfunction stableHash(value) {\n  let hash = 2166136261;\n  for (let i = 0; i < value.length; i += 1) {\n    hash ^= value.charCodeAt(i);\n    hash = Math.imul(hash, 16777619);\n  }\n  return (hash >>> 0).toString(16).padStart(8, '0');\n}\n\nfunction firstNonEmptyString(...values) {\n  for (const value of values) {\n    if (typeof value === 'string' && value.trim()) {\n      return value.trim();\n    }\n  }\n  return null;\n}\n\nfunction resolveIngestionEventId(raw, lead) {\n  const headers = raw && typeof raw.headers === 'object' ? raw.headers : {};\n  const existing = firstNonEmptyString(\n    lead.event_id,\n    lead.eventId,\n    lead.ingestion_event_id,\n    raw.event_id,\n    raw.eventId,\n    raw.id,\n    headers['x-event-id']\n  );\n  if (existing) return existing;\n\n  const seed = stableStringify({\n    source_type: lead.source_type || raw.source_type || 'inbound',\n    submitted_at: lead.submitted_at || lead.timestamp || lead.created_at || raw.timestamp || null,\n    payload: lead,\n  });\n  return `af_ingest_${stableHash(seed)}`;\n}\n\n/**\n * Main entry point for the n8n Code node.\n */\n\n  // n8n may wrap the payload in an envelope (headers/params/query/body);\n  // unwrap if present so we always operate on the lead object itself.\n  const raw = $input.first().json;\n  const lead = raw.body && typeof raw.body === 'object' ? raw.body : raw;\n\n  // 0. Strip malformed text FIRST \u2014 before any gate. Rejected leads (bad email,\n  //    blocked jurisdiction) also flow to Log Spam, and control characters\n  //    (\\u0000 etc.) crash Postgres with 22P05 if they reach the spam_log RPC.\n  const strippedLead = stripMalformedText(lead);\n  const eventId = resolveIngestionEventId(raw, strippedLead);\n\n  // 1. Sanitize the email next \u2014 gate everything else on it.\n  const emailCheck = sanitizeEmail(strippedLead.email);\n\n  if (!emailCheck.ok) {\n    return {\n      json: {\n        ...strippedLead,\n        sanitized: false,\n        reason: emailCheck.reason,\n        email: emailCheck.email || null,\n        event_id: eventId,\n      },\n    };\n  }\n\n  // Anti-ICP Stage 5: hard-exclude blocked jurisdictions when the payload\n  // carries a country signal (ISO code or name) \u2014 reject at the door so we\n  // never spend verification/enrichment credits on them.\n  const jurisdiction = resolveBlockedCountry(strippedLead.country_code, strippedLead.country);\n  if (jurisdiction.blocked) {\n    return {\n      json: {\n        ...strippedLead,\n        sanitized: false,\n        reason: 'blocked_jurisdiction',\n        email: emailCheck.email || null,\n        event_id: eventId,\n        country_code: jurisdiction.code,\n      },\n    };\n  }\n\n  // 2. Pass branch: lead is already stripped (step 0). Re-apply the validated\n  //    email (normalized + lowercased).\n  const sanitizedLead = { ...strippedLead, event_id: eventId };\n  sanitizedLead.email = emailCheck.email;\n\n  return {\n    json: {\n      ...sanitizedLead,\n      sanitized: true,\n      email_domain: emailCheck.domain,\n    },\n  };\n"
       }
     },
     {
@@ -186,9 +340,14 @@
             "response": {
               "responseFormat": "json"
             }
-          }
+          },
+          "timeout": 30000
         }
-      }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000,
+      "onError": "stopWorkflow"
     },
     {
       "id": "code-normalize-dedup",
@@ -223,9 +382,14 @@
             "response": {
               "responseFormat": "json"
             }
-          }
+          },
+          "timeout": 30000
         }
-      }
+      },
+      "retryOnFail": false,
+      "maxTries": 1,
+      "waitBetweenTries": 0,
+      "onError": "stopWorkflow"
     },
     {
       "id": "code-restore-after-timeline",
@@ -291,15 +455,33 @@
       ],
       "parameters": {
         "method": "GET",
-        "url": "={{ $env.EMAIL_VERIFY_BASE_URL + '?api_key=' + $env.EMAIL_VERIFY_API_KEY + '&email=' + encodeURIComponent($('Sanitize Lead').first().json.email) }}",
+        "url": "={{ $env.EMAIL_VERIFY_BASE_URL.replace(/\\/$/, '') + '/v1/verify' }}",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "email",
+              "value": "={{ $('Sanitize Lead').first().json.email }}"
+            },
+            {
+              "name": "api_key",
+              "value": "={{ $env.EMAIL_VERIFY_API_KEY }}"
+            }
+          ]
+        },
         "options": {
+          "timeout": 30000,
           "response": {
             "response": {
               "responseFormat": "json"
             }
           }
         }
-      }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000,
+      "onError": "stopWorkflow"
     },
     {
       "id": "code-verify-parse",
@@ -311,7 +493,7 @@
         0
       ],
       "parameters": {
-        "jsCode": "/**\n * ============================================\n * n8n Code Node \u2014 Stage 2b: Parse Email Verification Result\n * ============================================\n * Paste this into an n8n \"Code\" node (JavaScript mode).\n *\n * Purpose:\n *   Normalize the verification provider's response into a single\n *   { deliverable, verdict } decision. Provider-agnostic \u2014 handles\n *   Emailable (state), Abstract (deliverability), Hunter (data.result),\n *   and ZeroBounce (status) shapes.\n *\n *   deliverable = true ONLY for confirmed-deliverable verdicts:\n *     Emailable:  state === \"deliverable\"\n *     Abstract:   deliverability === \"DELIVERABLE\" && not disposable\n *     Hunter:     result === \"deliverable\"\n *     ZeroBounce: status === \"valid\"\n *   catch-all / risky / unknown / disposable -> NOT deliverable\n *   (conservative by design for CRM hygiene).\n *\n * Input:   $json = provider response\n * Output:  [{ deliverable: boolean, verdict: string }]\n * ============================================\n */\n\n/** Normalize an Emailable / Abstract / Hunter / ZeroBounce verification response. */\nfunction parseVerifyResponse(raw) {\n  const data = (raw && (raw.data || raw)) || {};\n\n  // Emailable: { state: \"deliverable\"|\"undeliverable\"|\"risky\"|\"unknown\", reason }\n  const state = String(data.state || '').toLowerCase();\n\n  // Abstract: { deliverability: \"DELIVERABLE\"|\"UNDELIVERABLE\"|\"UNKNOWN\"|\"RISKY\", is_disposable_email: bool, ... }\n  const deliverability = String(data.deliverability || '').toLowerCase();\n\n  // Hunter:   { data: { status, result } }\n  // ZeroBounce: { status, sub_status }\n  const status = String(data.status || '').toLowerCase();\n  const result = String(data.result || '').toLowerCase();\n\n  // Mailboxlayer: { format_valid, mx_found, smtp_check, catch_all, disposable, ... }\n  const smtpOk = data.smtp_check === true || data.smtp_check === 'true';\n\n  const deliverable =\n    state === 'deliverable' ||\n    (deliverability === 'deliverable' && !data.is_disposable_email) ||\n    result === 'deliverable' ||\n    status === 'valid' ||\n    (data.format_valid === true && smtpOk && data.catch_all !== true && !data.disposable);\n\n  // verdict is debug info; the deliverable boolean is the decision.\n  const verdict = deliverable\n    ? 'deliverable'\n    : state || deliverability || result || status || 'unknown';\n\n  return { deliverable, verdict };\n}\n\n\n  const raw = $input.first().json;\n  const parsed = parseVerifyResponse(raw);\n\n  return [{ deliverable: parsed.deliverable, verdict: parsed.verdict }];\n"
+        "jsCode": "/**\n * ============================================\n * n8n Code Node \u2014 Stage 2b: Parse Email Verification Result\n * ============================================\n * Paste this into an n8n \"Code\" node (JavaScript mode).\n *\n * Purpose:\n *   Normalize the canonical Emailable response into a deterministic\n *   { deliverable, verdict, verification_status } decision.\n *\n *   deliverable = true ONLY for confirmed-deliverable verdicts:\n *     Emailable:  state === \"deliverable\"\n *     Abstract:   deliverability === \"DELIVERABLE\" && not disposable\n *     Hunter:     result === \"deliverable\"\n *     ZeroBounce: status === \"valid\"\n *   catch-all / risky / unknown / disposable -> NOT deliverable\n *   (conservative by design for CRM hygiene).\n *\n * Input:   $json = provider response\n * Output:  [{ deliverable: boolean, verdict: string }]\n * ============================================\n */\n\n/** Normalize an Emailable single-verification response. */\nfunction parseVerifyResponse(raw) {\n  const data = (raw && raw.data) || raw || {};\n  const state = String(data.state || '').toLowerCase();\n  if (!state) throw new Error('emailable_response_missing_state');\n  if (!['deliverable', 'undeliverable', 'risky', 'unknown'].includes(state)) {\n    throw new Error(`emailable_response_invalid_state:${state}`);\n  }\n  return {\n    deliverable: state === 'deliverable',\n    verdict: state,\n    verification_status: 'completed',\n    reason: typeof data.reason === 'string' ? data.reason : null,\n  };\n}\n\n\n  const raw = $input.first().json;\n  const parsed = parseVerifyResponse(raw);\n\n  return [parsed];\n"
       }
     },
     {
@@ -365,9 +547,14 @@
             "response": {
               "responseFormat": "json"
             }
-          }
+          },
+          "timeout": 30000
         }
-      }
+      },
+      "retryOnFail": false,
+      "maxTries": 1,
+      "waitBetweenTries": 0,
+      "onError": "stopWorkflow"
     },
     {
       "id": "rpc-evaluate-unverified",
@@ -389,9 +576,14 @@
             "response": {
               "responseFormat": "json"
             }
-          }
+          },
+          "timeout": 30000
         }
-      }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000,
+      "onError": "stopWorkflow"
     },
     {
       "id": "if-enrich-enabled",
@@ -444,18 +636,34 @@
       ],
       "parameters": {
         "url": "={{ $env.ENRICH_BASE_URL }}",
-        "requestMethod": "POST",
-        "jsonParameters": true,
-        "headerParametersJson": "={{ JSON.stringify({ 'X-Api-Key': $env.ENRICH_API_KEY }) }}",
-        "bodyParametersJson": "={{ JSON.stringify({ domain: $('Sanitize Lead').first().json.email_domain }) }}",
-        "options": {
-          "response": {
-            "response": {
-              "responseFormat": "json"
+        "headerParametersUi": {
+          "parameter": [
+            {
+              "name": "x-api-key",
+              "value": "={{ $env.ENRICH_API_KEY }}"
+            },
+            {
+              "name": "accept",
+              "value": "application/json"
             }
-          }
+          ]
+        },
+        "queryParametersUi": {
+          "parameter": [
+            {
+              "name": "domain",
+              "value": "={{ $('Sanitize Lead').first().json.email_domain }}"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 30000
         }
-      }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000,
+      "onError": "stopWorkflow"
     },
     {
       "id": "code-enrich-parse",
@@ -467,7 +675,7 @@
         80
       ],
       "parameters": {
-        "jsCode": "/**\n * ============================================\n * n8n Code Node \u2014 Stage 4: Merge Enrichment Into Firmographics\n * ============================================\n * Paste this into an n8n \"Code\" node (JavaScript mode).\n *\n * Purpose:\n *   Merge company enrichment data (Apollo organization response) into the\n *   lead's firmographics before Gemini scoring. Provider-agnostic: when the\n *   input carries an `organization` object the new fields win; otherwise\n *   the sanitizer's firmographics pass through unchanged (enrichment OFF).\n *\n * Business rules (see .clinerules):\n *   * Enrichment runs only for NEW + deliverable leads (the workflow gates\n *     it after verification) \u2014 never wastes credits on duplicates/bounces.\n *   * Enrichment never removes existing data \u2014 it only fills gaps.\n *\n * Reads:\n *   $input  = Call Enrich API response { organization: {...} }\n *             OR pass-through items (enrichment disabled path)\n *   $('Sanitize Lead')            -> { firmographics }   (base data)\n *   $('Dedup: Get or Create Lead') -> { lead_id }\n *\n * Output (to \"Score Lead (Gemini)\"):\n *   [{ lead_id, firmographics }]   (merged, or unchanged when no org data)\n * ============================================\n */\n\n/**\n * Merge Apollo organization data into base firmographics.\n * Organization fields win when present; base data is never dropped.\n */\nfunction mergeEnrichment(inputJson, baseFirmographics) {\n  const org = inputJson && inputJson.organization;\n  if (!org) {\n    return baseFirmographics || {};\n  }\n\n  return {\n    ...(baseFirmographics || {}),\n    industry: org.industry || (baseFirmographics || {}).industry,\n    employees: org.estimated_num_employees || (baseFirmographics || {}).employees,\n    country: org.country || (baseFirmographics || {}).country,\n    city: org.city || (baseFirmographics || {}).city,\n    enriched_by: 'apollo',\n  };\n}\n\n\n  const input = $input.first().json;\n  const sanitized = $('Sanitize Lead').first().json;\n  const base = (sanitized && sanitized.firmographics) || {};\n  const firmographics = mergeEnrichment(input, base);\n  const leadId = $('Dedup: Get or Create Lead').first().json.lead_id;\n\n  return [{ lead_id: leadId, firmographics }];\n"
+        "jsCode": "/**\n * Normalize Apollo organization enrichment into AgentFlow's provider-neutral\n * signup qualification contract. Only allowlisted values that are present in\n * Apollo or the real signup context are included; absent values stay absent.\n */\n\nfunction nonEmptyString(value) {\n  return typeof value === 'string' && value.trim() ? value.trim() : undefined;\n}\n\nfunction finiteNumber(value) {\n  return typeof value === 'number' && Number.isFinite(value) ? value : undefined;\n}\n\nfunction stringArray(value) {\n  if (!Array.isArray(value)) return undefined;\n  const values = [...new Set(value.map(nonEmptyString).filter(Boolean))];\n  return values.length ? values : undefined;\n}\n\nfunction compact(object) {\n  return Object.fromEntries(Object.entries(object).filter(([, value]) => value !== undefined));\n}\n\n/** Build a normalized object without copying provider-specific raw fields. */\nfunction normalizeFirmographics(inputJson, baseFirmographics, context = {}) {\n  const org = inputJson && inputJson.organization && typeof inputJson.organization === 'object'\n    ? inputJson.organization\n    : null;\n  const base = baseFirmographics && typeof baseFirmographics === 'object' ? baseFirmographics : {};\n  const technologies = org\n    ? stringArray([\n        ...(Array.isArray(org.technology_names) ? org.technology_names : []),\n        ...(Array.isArray(org.current_technologies)\n          ? org.current_technologies.map((technology) => technology && technology.name)\n          : []),\n      ])\n    : undefined;\n\n  return compact({\n    company_name: nonEmptyString(org?.name) || nonEmptyString(context.company_name) || nonEmptyString(base.company_name),\n    domain: nonEmptyString(org?.primary_domain) || nonEmptyString(context.domain) || nonEmptyString(base.domain),\n    industry: nonEmptyString(org?.industry),\n    industries: stringArray(org?.industries),\n    employee_count: finiteNumber(org?.estimated_num_employees),\n    country: nonEmptyString(org?.country),\n    region: nonEmptyString(org?.state),\n    city: nonEmptyString(org?.city),\n    company_description: nonEmptyString(org?.short_description) || nonEmptyString(org?.seo_description),\n    founded_year: finiteNumber(org?.founded_year),\n    total_funding: finiteNumber(org?.total_funding),\n    latest_funding_stage: nonEmptyString(org?.latest_funding_stage),\n    latest_funding_round_date: nonEmptyString(org?.latest_funding_round_date),\n    headcount_growth_6m: finiteNumber(org?.organization_headcount_six_month_growth),\n    headcount_growth_12m: finiteNumber(org?.organization_headcount_twelve_month_growth),\n    headcount_growth_24m: finiteNumber(org?.organization_headcount_twenty_four_month_growth),\n    technologies,\n    email_verification_status: nonEmptyString(context.email_verification_status),\n    email_classification: nonEmptyString(context.email_classification),\n    acquisition_source: nonEmptyString(context.acquisition_source),\n    auth_provider: nonEmptyString(context.auth_provider),\n    signup_event: nonEmptyString(context.signup_event),\n    enrichment_provider: org ? 'apollo' : undefined,\n  });\n}\n\n\n  const input = $input.first().json || {};\n  const sanitized = $('Sanitize Lead').first().json || {};\n  const rawPayload = sanitized.raw_payload && typeof sanitized.raw_payload === 'object'\n    ? sanitized.raw_payload\n    : {};\n  let verification = {};\n  let enrichmentRequested = false;\n  try {\n    if ($('Parse Verification').isExecuted) verification = $('Parse Verification').first().json || {};\n  } catch {}\n  try {\n    enrichmentRequested = Boolean($('Call Enrich API').isExecuted);\n  } catch {}\n\n  const organizationMatched = Boolean(input.organization && typeof input.organization === 'object');\n  const firmographics = normalizeFirmographics(input, sanitized.firmographics, {\n    company_name: sanitized.company_name,\n    domain: sanitized.email_domain,\n    email_verification_status: verification.verification_status === 'completed'\n      ? verification.verdict\n      : 'not_run',\n    email_classification: sanitized.email_domain ? 'business' : undefined,\n    acquisition_source: sanitized.source,\n    auth_provider: rawPayload.auth_provider,\n    signup_event: rawPayload.source_event,\n  });\n  const leadId = $('Normalize Lead Context').first().json.lead_id;\n\n  return [{\n    lead_id: leadId,\n    enrichment_status: organizationMatched ? 'matched' : (enrichmentRequested ? 'not_found' : 'not_requested'),\n    firmographics,\n  }];\n"
       }
     },
     {
@@ -534,9 +742,14 @@
             "response": {
               "responseFormat": "json"
             }
-          }
+          },
+          "timeout": 30000
         }
-      }
+      },
+      "retryOnFail": false,
+      "maxTries": 1,
+      "waitBetweenTries": 0,
+      "onError": "stopWorkflow"
     },
     {
       "id": "rpc-evaluate-blocked",
@@ -558,9 +771,14 @@
             "response": {
               "responseFormat": "json"
             }
-          }
+          },
+          "timeout": 30000
         }
-      }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000,
+      "onError": "stopWorkflow"
     },
     {
       "id": "code-gemini-score",
@@ -572,7 +790,38 @@
         80
       ],
       "parameters": {
-        "jsCode": "/**\n * ============================================\n * n8n Code Node \u2014 Stage 6a: Build Gemini Scoring Prompt\n * ============================================\n * Paste this into an n8n \"Code\" node (JavaScript mode).\n *\n * Purpose:\n *   Decide whether a NEW lead should be scored, and if so build the\n *   Gemini prompt from its firmographics. This node NEVER touches the\n *   API key \u2014 the actual API call is made by the \"Call Gemini API\"\n *   HTTP Request node (credential: Gemini API Key (dev)), and the\n *   response is validated by \"Parse Gemini Score\".\n *\n * Business rules (see .clinerules):\n *   * Only NEW leads are scored (duplicates would burn API quota re-scoring).\n *   * Leads without firmographic signal are skipped silently.\n *   * icp_score >= 70 -> status 'qualified', else -> 'nurture'\n *     (Module 4 routing happens later; Stage 6 only persists the score).\n *\n * Reads from:\n *   $('Normalize Lead Context')    -> { lead_id, is_new }\n *   $('Sanitize Lead')            -> { firmographics }\n *\n * Outputs (to \"Call Gemini API\"):\n *   [{ lead_id, prompt }]   -> score this lead\n *   []                      -> skip (duplicate / no firmographics)\n * ============================================\n */\n\n/** Build the prompt that instructs Gemini to score the lead. */\nfunction buildScoringPrompt(firmographics) {\n  return [\n    'You are a B2B RevOps lead-scoring assistant.',\n    'Analyze the following enriched firmographic data for a prospective company.',\n    'Return a STRICT JSON object (no markdown, no commentary) with exactly these keys:',\n    '  - \"icp_score\": an integer from 0 to 100 representing how well the company fits our ICP.',\n    '  - \"buying_intent\": one of \"high\", \"medium\", or \"low\" based on signals like tech stack maturity and monthly spend.',\n    '  - \"personalized_icebreaker\": a short, professional, personalized opening message (max 2 sentences) referencing the company\\'s tech stack and monthly spend.',\n    '',\n    'Firmographic data:',\n    JSON.stringify(firmographics, null, 2),\n    '',\n    'Respond with only the JSON object.',\n  ].join('\\n');\n}\n\n\n  const leadContext = $('Normalize Lead Context').first().json || {};\n  // Firmographics come from the enrichment merger (Stage 4) \u2014 which passes\n  // the sanitizer's firmographics through unchanged when enrichment is off.\n  const enriched = $('Parse Enrichment').first().json;\n  const firmographics = (enriched && enriched.firmographics) || {};\n\n  // Only score brand-new leads: duplicates already got a timeline event.\n  if (!leadContext.is_new) {\n    return [];\n  }\n\n  // Need at least one firmographic signal to score meaningfully.\n  const hasSignal =\n    firmographics &&\n    (firmographics.company_name ||\n      firmographics.industry ||\n      firmographics.employees ||\n      firmographics.tech_stack ||\n      firmographics.monthly_spend ||\n      firmographics.domain);\n\n  if (!hasSignal) {\n    return []; // nothing to score -> end branch silently\n  }\n\n  return [\n    {\n      lead_id: leadContext.lead_id,\n      prompt: buildScoringPrompt(firmographics),\n    },\n  ];\n"
+        "jsCode": "/** Build AgentFlow's signup ICP prompt from normalized firmographics only. */\nfunction buildScoringPrompt(firmographics) {\n  return [\n    'You are the lead qualification intelligence layer for AgentFlow, an AI-powered workflow automation platform.',\n    '',\n    'Evaluate the prospective organization using ONLY the firmographic and enrichment information supplied.',\n    '',\n    'AgentFlow is relevant to organizations that could benefit from:',\n    '- AI-powered workflow automation',\n    '- n8n/API/integration automation',\n    '- repetitive operational-process automation',\n    '- GTM/RevOps automation',\n    '- AI workflow generation/orchestration',\n    '- multi-system integration',\n    '',\n    'Assess company fit using available evidence such as industry, employee count, geography, organization description, growth or funding indicators, technologies only when explicitly supplied, and other supplied enrichment attributes.',\n    '',\n    'Return STRICT JSON with exactly these keys:',\n    '{\"icp_score\":0,\"fit\":\"low\",\"buying_intent\":\"unknown\",\"qualification_reason\":\"\",\"company_summary\":\"\",\"personalized_icebreaker\":\"\"}',\n    '',\n    'Rules:',\n    '- icp_score must be an integer from 0 to 100.',\n    '- fit must be \"high\", \"medium\", or \"low\" and must agree with the score and evidence.',\n    '- buying_intent must be \"unknown\". Firmographic fit is not buying intent.',\n    '- qualification_reason must be a brief evidence-based explanation.',\n    '- company_summary must be brief and factual.',\n    '- personalized_icebreaker must be 1-2 professional sentences using known data only.',\n    '- Never invent missing information.',\n    '- Never infer budget, monthly spend, pain points, or purchase intent.',\n    '- Never invent technology usage. Mention technologies only when they appear in the supplied object.',\n    '- Missing enrichment must reduce confidence and fit rather than cause fabrication.',\n    '- Personal email domains without reliable organization enrichment are low-confidence and must not produce invented company data.',\n    '- No markdown and no commentary outside the JSON object.',\n    '',\n    'Normalized firmographic data:',\n    JSON.stringify(firmographics, null, 2),\n  ].join('\\n');\n}\n\n\n  const leadContext = $('Normalize Lead Context').first().json || {};\n  const enriched = $('Parse Enrichment').first().json || {};\n  const firmographics = enriched.firmographics || {};\n\n  if (!leadContext.is_new) {\n    return [{\n      lead_id: leadContext.lead_id,\n      scoring_required: false,\n      deterministic_qualification: false,\n      scoring_status: 'skipped',\n      status: 'skipped',\n      reason: 'duplicate_lead',\n    }];\n  }\n\n  const hasReliableOrganization = enriched.enrichment_status === 'matched'\n    && Boolean(\n      firmographics.company_name ||\n      firmographics.domain ||\n      firmographics.industry ||\n      firmographics.employee_count ||\n      firmographics.country ||\n      firmographics.company_description ||\n      firmographics.total_funding ||\n      firmographics.technologies\n    );\n\n  if (!hasReliableOrganization) {\n    return [{\n      lead_id: leadContext.lead_id,\n      scoring_required: false,\n      deterministic_qualification: true,\n      scoring_status: 'low_confidence',\n      enrichment_status: enriched.enrichment_status || 'not_found',\n      status: 'nurture',\n      reason: 'insufficient_firmographic_evidence',\n      firmographics,\n    }];\n  }\n\n  return [{\n    lead_id: leadContext.lead_id,\n    scoring_required: true,\n    deterministic_qualification: false,\n    scoring_status: 'pending',\n    enrichment_status: enriched.enrichment_status,\n    firmographics,\n    prompt: buildScoringPrompt(firmographics),\n  }];\n"
+      }
+    },
+    {
+      "id": "if-gemini-required",
+      "name": "Gemini Scoring Required?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        5920,
+        80
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "cond-gemini-required",
+              "leftValue": "={{ $json.scoring_required }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true"
+              }
+            }
+          ]
+        },
+        "options": {}
       }
     },
     {
@@ -584,20 +833,34 @@
         6080,
         80
       ],
+      "onError": "continueErrorOutput",
       "parameters": {
         "method": "POST",
-        "url": "={{ $env.GEMINI_ENDPOINT + '?key=' + $env.GEMINI_API_KEY }}",
+        "url": "={{ $env.GEMINI_ENDPOINT.replace(/\\/$/, '') + '/' + $env.GEMINI_MODEL + ':generateContent' }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "x-goog-api-key",
+              "value": "={{ $env.GEMINI_API_KEY }}"
+            }
+          ]
+        },
         "sendBody": true,
         "specifyBody": "json",
-        "jsonBody": "={{ JSON.stringify({ contents: [{ parts: [{ text: $json.prompt }] }], generationConfig: { temperature: 0.2, maxOutputTokens: 512 } }) }}",
+        "jsonBody": "={{ JSON.stringify({ contents: [{ parts: [{ text: $json.prompt }] }], generationConfig: { temperature: 0.2, maxOutputTokens: 768, responseMimeType: 'application/json', responseJsonSchema: { type: 'object', required: ['icp_score','fit','buying_intent','qualification_reason','company_summary','personalized_icebreaker'], properties: { icp_score: { type: 'integer', minimum: 0, maximum: 100 }, fit: { type: 'string', enum: ['high','medium','low'] }, buying_intent: { type: 'string', enum: ['unknown'] }, qualification_reason: { type: 'string' }, company_summary: { type: 'string' }, personalized_icebreaker: { type: 'string' } } } } }) }}",
         "options": {
           "response": {
             "response": {
               "responseFormat": "json"
             }
-          }
+          },
+          "timeout": 30000
         }
-      }
+      },
+      "retryOnFail": false,
+      "maxTries": 1,
+      "waitBetweenTries": 0
     },
     {
       "id": "code-gemini-parse",
@@ -608,8 +871,108 @@
         6400,
         80
       ],
+      "onError": "continueErrorOutput",
       "parameters": {
-        "jsCode": "/**\n * ============================================\n * n8n Code Node \u2014 Stage 6b: Parse & Validate Gemini Score\n * ============================================\n * Paste this into an n8n \"Code\" node (JavaScript mode).\n *\n * Purpose:\n *   Parse the \"Call Gemini API\" HTTP node response, validate the strict\n *   scoring shape, and hand a clean record to the \"Update Lead Score\"\n *   RPC node. No API key is touched here.\n *\n * Input:   $json  = Gemini generateContent response\n *          (candidates[0].content.parts[0].text = the JSON score)\n * Reads:   $('Score Lead (Gemini)') -> { lead_id }\n * Output:  [{ lead_id, icp_score, buying_intent,\n *             personalized_icebreaker, status }]\n *          or [] to end the branch silently (malformed / no text).\n * ============================================\n */\n\n/** Parse and validate the Gemini response into a strict scoring shape. */\nfunction parseGeminiResponse(raw) {\n  const cleaned = raw\n    .replace(/```json/gi, '')\n    .replace(/```/g, '')\n    .trim();\n\n  const parsed = JSON.parse(cleaned);\n  const icp_score = Number(parsed.icp_score);\n  const buying_intent = parsed.buying_intent;\n  const personalized_icebreaker = parsed.personalized_icebreaker;\n\n  if (\n    Number.isNaN(icp_score) ||\n    icp_score < 0 ||\n    icp_score > 100 ||\n    !['high', 'medium', 'low'].includes(buying_intent) ||\n    typeof personalized_icebreaker !== 'string'\n  ) {\n    throw new Error('Gemini returned an unexpected scoring shape.');\n  }\n\n  return { icp_score, buying_intent, personalized_icebreaker };\n}\n\n\n  const response = $input.first().json;\n  const text = response.candidates?.[0]?.content?.parts?.[0]?.text;\n\n  if (!text) {\n    return []; // no usable text -> end branch silently\n  }\n\n  const score = parseGeminiResponse(text);\n  const leadId = $('Score Lead (Gemini)').first().json.lead_id;\n  const status = score.icp_score >= 70 ? 'qualified' : 'nurture';\n\n  return [\n    {\n      lead_id: leadId,\n      icp_score: score.icp_score,\n      buying_intent: score.buying_intent,\n      personalized_icebreaker: score.personalized_icebreaker,\n      status,\n    },\n  ];\n"
+        "jsCode": "/** Parse and validate the strict AgentFlow signup ICP contract. */\nfunction parseGeminiResponse(raw) {\n  const cleaned = raw.replace(/```json/gi, '').replace(/```/g, '').trim();\n  const parsed = JSON.parse(cleaned);\n  const icpScore = Number(parsed.icp_score);\n\n  if (\n    !Number.isInteger(icpScore) ||\n    icpScore < 0 ||\n    icpScore > 100 ||\n    !['high', 'medium', 'low'].includes(parsed.fit) ||\n    parsed.buying_intent !== 'unknown' ||\n    typeof parsed.qualification_reason !== 'string' ||\n    !parsed.qualification_reason.trim() ||\n    typeof parsed.company_summary !== 'string' ||\n    typeof parsed.personalized_icebreaker !== 'string'\n  ) {\n    throw new Error('gemini_response_unexpected_agentflow_icp_shape');\n  }\n\n  return {\n    icp_score: icpScore,\n    fit: parsed.fit,\n    buying_intent: 'unknown',\n    qualification_reason: parsed.qualification_reason.trim(),\n    company_summary: parsed.company_summary.trim(),\n    personalized_icebreaker: parsed.personalized_icebreaker.trim(),\n  };\n}\n\nfunction extractGeminiText(response) {\n  const finishReason = response.candidates?.[0]?.finishReason;\n  if (response.promptFeedback?.blockReason || finishReason === 'SAFETY') {\n    throw new Error(`gemini_safety_block:${response.promptFeedback?.blockReason || finishReason}`);\n  }\n  if (!Array.isArray(response.candidates) || response.candidates.length === 0) {\n    throw new Error('gemini_response_missing_candidates');\n  }\n  const text = response.candidates?.[0]?.content?.parts?.[0]?.text;\n  if (!text) throw new Error(`gemini_response_missing_text:${finishReason || 'unknown'}`);\n  return text;\n}\n\n\n  const response = $input.first().json || {};\n  const text = extractGeminiText(response);\n\n  let score;\n  try {\n    score = parseGeminiResponse(text);\n  } catch (error) {\n    if (error instanceof Error && error.message.startsWith('gemini_response_')) throw error;\n    throw new Error(`gemini_response_invalid_json:${error instanceof Error ? error.message : 'unknown'}`);\n  }\n\n  const scoringContext = $('Score Lead (Gemini)').first().json || {};\n  return [{\n    lead_id: scoringContext.lead_id,\n    ...score,\n    enrichment_status: scoringContext.enrichment_status,\n    scoring_status: 'completed',\n    status: score.icp_score >= 70 ? 'qualified' : 'nurture',\n  }];\n"
+      }
+    },
+    {
+      "id": "code-gemini-failure",
+      "name": "Normalize Gemini Scoring Failure",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        6400,
+        500
+      ],
+      "parameters": {
+        "jsCode": "const input = $input.first().json || {};\nconst message = String(input.error?.message || input.message || input.description || 'gemini_provider_error').toLowerCase();\nlet reason = 'gemini_provider_error';\nif (message.includes('429') || message.includes('rate')) reason = 'gemini_rate_limited';\nelse if (message.includes('timeout') || message.includes('timed out')) reason = 'gemini_timeout';\nelse if (message.includes('safety')) reason = 'gemini_safety_block';\nelse if (message.includes('missing_candidates')) reason = 'gemini_response_missing_candidates';\nelse if (message.includes('missing_text')) reason = 'gemini_response_missing_text';\nelse if (message.includes('invalid_json') || message.includes('unexpected_agentflow_icp_shape')) reason = 'gemini_response_invalid';\nreturn [{\n  lead_id: $('Score Lead (Gemini)').first().json.lead_id,\n  scoring_status: 'provider_failed',\n  reason,\n}];\n"
+      }
+    },
+    {
+      "id": "rpc-gemini-failure",
+      "name": "Record Gemini Scoring Failure",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 2,
+      "position": [
+        6720,
+        500
+      ],
+      "parameters": {
+        "url": "={{ $env.SUPABASE_URL + '/rest/v1/rpc/append_lead_event' }}",
+        "requestMethod": "POST",
+        "jsonParameters": true,
+        "headerParametersJson": "={{ JSON.stringify({ apikey: $env.SUPABASE_SERVICE_ROLE_KEY, Authorization: 'Bearer ' + $env.SUPABASE_SERVICE_ROLE_KEY }) }}",
+        "bodyParametersJson": "={{ JSON.stringify({ p_lead_id: $json.lead_id, p_event_type: 'lead.scoring_failed', p_event_data: { scoring_status: $json.scoring_status, reason: $json.reason, provider: 'gemini' } }) }}",
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "json"
+            }
+          },
+          "timeout": 30000
+        }
+      },
+      "retryOnFail": false,
+      "maxTries": 1,
+      "waitBetweenTries": 0,
+      "onError": "stopWorkflow"
+    },
+    {
+      "id": "if-deterministic-qualification",
+      "name": "Deterministic Qualification Required?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        6080,
+        300
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "cond-deterministic-qualification",
+              "leftValue": "={{ $json.deterministic_qualification }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true"
+              }
+            }
+          ]
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "code-low-confidence-score",
+      "name": "Build Low-Confidence Qualification",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        6400,
+        300
+      ],
+      "parameters": {
+        "jsCode": "/** Create a persisted, non-fabricated outcome when Apollo has no match. */\nfunction buildLowConfidenceQualification(context) {\n  return {\n    lead_id: context.lead_id,\n    icp_score: 0,\n    fit: 'low',\n    buying_intent: 'unknown',\n    qualification_reason: 'Insufficient firmographic evidence: Apollo did not return a reliable organization match.',\n    company_summary: '',\n    personalized_icebreaker: '',\n    enrichment_status: context.enrichment_status || 'not_found',\n    scoring_status: 'skipped',\n    confidence: 'low',\n    status: 'nurture',\n  };\n}\n\n\n  return [buildLowConfidenceQualification($input.first().json || {})];\n"
+      }
+    },
+    {
+      "id": "code-normalize-score-context",
+      "name": "Normalize Score Context",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        6560,
+        80
+      ],
+      "parameters": {
+        "jsCode": "return $input.all();"
       }
     },
     {
@@ -626,15 +989,20 @@
         "requestMethod": "POST",
         "jsonParameters": true,
         "headerParametersJson": "={{ JSON.stringify({ apikey: $env.SUPABASE_SERVICE_ROLE_KEY, Authorization: 'Bearer ' + $env.SUPABASE_SERVICE_ROLE_KEY }) }}",
-        "bodyParametersJson": "={{ JSON.stringify({ p_lead_id: $json.lead_id, p_icp_score: $json.icp_score, p_buying_intent: $json.buying_intent, p_icebreaker: $json.personalized_icebreaker, p_status: $json.status, p_firmographics: $('Parse Enrichment').first().json.firmographics }) }}",
+        "bodyParametersJson": "={{ JSON.stringify({ p_lead_id: $json.lead_id, p_icp_score: $json.icp_score, p_buying_intent: null, p_icebreaker: $json.personalized_icebreaker, p_status: $json.status, p_firmographics: { ...$('Parse Enrichment').first().json.firmographics, qualification: { fit: $json.fit, buying_intent: $json.buying_intent, qualification_reason: $json.qualification_reason, company_summary: $json.company_summary, enrichment_status: $json.enrichment_status, scoring_status: $json.scoring_status, confidence: $json.confidence || ($json.scoring_status === 'completed' ? 'model_assessed' : 'low') } } }) }}",
         "options": {
           "response": {
             "response": {
               "responseFormat": "json"
             }
-          }
+          },
+          "timeout": 30000
         }
-      }
+      },
+      "retryOnFail": false,
+      "maxTries": 1,
+      "waitBetweenTries": 0,
+      "onError": "stopWorkflow"
     },
     {
       "id": "rpc-evaluate-score",
@@ -650,15 +1018,20 @@
         "requestMethod": "POST",
         "jsonParameters": true,
         "headerParametersJson": "={{ JSON.stringify({ apikey: $env.SUPABASE_SERVICE_ROLE_KEY, Authorization: 'Bearer ' + $env.SUPABASE_SERVICE_ROLE_KEY }) }}",
-        "bodyParametersJson": "={{ JSON.stringify({ p_lead_id: $('Parse Gemini Score').first().json.lead_id, p_evaluation_type: 'score_update', p_source_runtime: 'precrm_n8n' }) }}",
+        "bodyParametersJson": "={{ JSON.stringify({ p_lead_id: $('Normalize Score Context').first().json.lead_id, p_evaluation_type: 'score_update', p_source_runtime: 'precrm_n8n' }) }}",
         "options": {
           "response": {
             "response": {
               "responseFormat": "json"
             }
-          }
+          },
+          "timeout": 30000
         }
-      }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000,
+      "onError": "stopWorkflow"
     },
     {
       "id": "code-normalize-qualification",
@@ -693,9 +1066,14 @@
             "response": {
               "responseFormat": "json"
             }
-          }
+          },
+          "timeout": 30000
         }
-      }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000,
+      "onError": "stopWorkflow"
     },
     {
       "id": "if-outbound",
@@ -745,9 +1123,14 @@
             "response": {
               "responseFormat": "json"
             }
-          }
+          },
+          "timeout": 30000
         }
-      }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000,
+      "onError": "stopWorkflow"
     },
     {
       "id": "code-outbound-gate",
@@ -759,7 +1142,7 @@
         240
       ],
       "parameters": {
-        "jsCode": "/**\n * ============================================\n * n8n Code Node \u2014 Outbound Gate (v2 M4)\n * ============================================\n * Runs ONLY for source_type='outbound_scraped' leads, after scoring. Decides\n * whether the lead is ready for the AI-outreach loop.\n *\n * Pass ONLY if: MX-ok (domain has a live mail server) AND icp_score >= 70.\n * Deliverability is already guaranteed upstream (only verified leads reach\n * scoring), so the gate here is MX + relevance. A no-MX or low-score lead is\n * kept staged with a logged reason, never emailed.\n *\n * Reads:\n *   $json (current item) = the MX sidecar response { domain, hasMx, records, error }\n *   $('Parse Gemini Score') = { icp_score, ... }\n *\n * Outputs: [{ outbound_gate: 'pass'|'fail', outbound_reason, icp_score }]\n * ============================================\n */\n\n\n  const mx = $json || {};\n  const score = $('Parse Gemini Score').first().json || {};\n  const icp = typeof score.icp_score === 'number' ? score.icp_score : 0;\n\n  if (!mx.hasMx) {\n    return [{ outbound_gate: 'fail', outbound_reason: 'no_mx', mx_domain: mx.domain || null, mx_error: mx.error || null, icp_score: icp }];\n  }\n  if (icp < 70) {\n    return [{ outbound_gate: 'fail', outbound_reason: 'low_score', icp_score: icp }];\n  }\n  return [{ outbound_gate: 'pass', outbound_reason: null, icp_score: icp }];\n"
+        "jsCode": "/**\n * ============================================\n * n8n Code Node \u2014 Outbound Gate (v2 M4)\n * ============================================\n * Runs ONLY for source_type='outbound_scraped' leads, after scoring. Decides\n * whether the lead is ready for the AI-outreach loop.\n *\n * Pass ONLY if: MX-ok (domain has a live mail server) AND icp_score >= 70.\n * Deliverability is already guaranteed upstream (only verified leads reach\n * scoring), so the gate here is MX + relevance. A no-MX or low-score lead is\n * kept staged with a logged reason, never emailed.\n *\n * Reads:\n *   $json (current item) = the MX sidecar response { domain, hasMx, records, error }\n *   $('Normalize Score Context') = { icp_score, ... }\n *\n * Outputs: [{ outbound_gate: 'pass'|'fail', outbound_reason, icp_score }]\n * ============================================\n */\n\n\n  const mx = $json || {};\n  const score = $('Normalize Score Context').first().json || {};\n  const icp = typeof score.icp_score === 'number' ? score.icp_score : 0;\n\n  if (!mx.hasMx) {\n    return [{ outbound_gate: 'fail', outbound_reason: 'no_mx', mx_domain: mx.domain || null, mx_error: mx.error || null, icp_score: icp }];\n  }\n  if (icp < 70) {\n    return [{ outbound_gate: 'fail', outbound_reason: 'low_score', icp_score: icp }];\n  }\n  return [{ outbound_gate: 'pass', outbound_reason: null, icp_score: icp }];\n"
       }
     },
     {
@@ -813,9 +1196,14 @@
             "response": {
               "responseFormat": "json"
             }
-          }
+          },
+          "timeout": 30000
         }
-      }
+      },
+      "retryOnFail": false,
+      "maxTries": 1,
+      "waitBetweenTries": 0,
+      "onError": "stopWorkflow"
     },
     {
       "id": "rpc-evaluate-outbound-ready",
@@ -837,9 +1225,14 @@
             "response": {
               "responseFormat": "json"
             }
-          }
+          },
+          "timeout": 30000
         }
-      }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000,
+      "onError": "stopWorkflow"
     },
     {
       "id": "rpc-route-outbound-ready",
@@ -861,9 +1254,14 @@
             "response": {
               "responseFormat": "json"
             }
-          }
+          },
+          "timeout": 30000
         }
-      }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000,
+      "onError": "stopWorkflow"
     },
     {
       "id": "slack-ready-to-push",
@@ -879,15 +1277,20 @@
         "url": "={{ $env.SLACK_WEBHOOK_URL }}",
         "sendBody": true,
         "specifyBody": "json",
-        "jsonBody": "={{ JSON.stringify({ text: '\ud83d\udcec READY TO PUSH (outbound): ' + ($('Sanitize Lead').first().json.company_name || 'Unknown') + ' (' + $('Sanitize Lead').first().json.email + ')\\nICP ' + $('Parse Gemini Score').first().json.icp_score + '/100 \u00b7 MX OK\\nOwner: ' + (($('Route Lead to Sales (Outbound Ready)').first().json.current_owner_type || 'unassigned').toUpperCase()) + ' \u00b7 Priority: ' + ($('Route Lead to Sales (Outbound Ready)').first().json.priority_tier || 'low') + ' \u00b7 Route: ' + ($('Route Lead to Sales (Outbound Ready)').first().json.routing_reason || 'n/a') }) }}",
+        "jsonBody": "={{ JSON.stringify({ text: '\ud83d\udcec READY TO PUSH (outbound): ' + ($('Sanitize Lead').first().json.company_name || 'Unknown') + ' (' + $('Sanitize Lead').first().json.email + ')\\nICP ' + $('Normalize Score Context').first().json.icp_score + '/100 \u00b7 MX OK\\nOwner: ' + (($('Route Lead to Sales (Outbound Ready)').first().json.current_owner_type || 'unassigned').toUpperCase()) + ' \u00b7 Priority: ' + ($('Route Lead to Sales (Outbound Ready)').first().json.priority_tier || 'low') + ' \u00b7 Route: ' + ($('Route Lead to Sales (Outbound Ready)').first().json.routing_reason || 'n/a') }) }}",
         "options": {
           "response": {
             "response": {
               "responseFormat": "text"
             }
-          }
+          },
+          "timeout": 30000
         }
-      }
+      },
+      "retryOnFail": false,
+      "maxTries": 1,
+      "waitBetweenTries": 0,
+      "onError": "stopWorkflow"
     },
     {
       "id": "rpc-sales-sync-outbound-slack",
@@ -909,9 +1312,14 @@
             "response": {
               "responseFormat": "json"
             }
-          }
+          },
+          "timeout": 30000
         }
-      }
+      },
+      "retryOnFail": false,
+      "maxTries": 1,
+      "waitBetweenTries": 0,
+      "onError": "stopWorkflow"
     },
     {
       "id": "code-outreach-prompt",
@@ -923,7 +1331,7 @@
         240
       ],
       "parameters": {
-        "jsCode": "/**\n * ============================================\n * n8n Code Node \u2014 v2 M5: Build Outreach Email Prompt\n * ============================================\n * For a ready_to_push OUTBOUND lead, build the Gemini prompt that writes a\n * personalized first-touch cold email. Runs only on the outbound ready_to_push\n * branch. No API key is touched here \u2014 the HTTP node does the call.\n *\n * Reads:\n *   $('Sanitize Lead')            -> { email, name, role, company_name, email_domain }\n *   $('Parse Gemini Score')       -> { icp_score, ... }\n *   $('Parse Enrichment')         -> { firmographics }\n *   $('Dedup: Get or Create Lead')-> { lead_id }\n *\n * Outputs (to \"Call Gemini (Outreach)\"):\n *   [{ lead_id, email, prompt }]\n * ============================================\n */\n\nfunction buildOutreachPrompt(lead, score, firmographics) {\n  const firmo = firmographics && typeof firmographics === 'object' ? firmographics : {};\n  const industry = firmo.industry || 'your industry';\n  const size = firmo.employees || 'your size';\n  const country = firmo.country || '';\n  const name = lead.name || 'there';\n  const role = lead.role || 'your team';\n  return [\n    'You are a B2B RevOps SDR writing a short, personalized FIRST outreach email.',\n    `Write a professional cold email to ${lead.company_name || lead.email_domain} (${industry}, ~${size} employees${country ? ', ' + country : ''}).`,\n    `Recipient: ${name}${role ? ' (' + role + ')' : ''}.`,\n    `Relevance score (ICP fit): ${score.icp_score ?? 'n/a'}/100.`,\n    'Rules:',\n    '  - Max 90 words; one clear value proposition; no links, no attachments, no hype.',\n    '  - Reference one signal from their company/role naturally (not generic).',\n    '  - End with a single low-pressure question.',\n    'Return a STRICT JSON object (no markdown, no commentary) with exactly:',\n    '  - \"subject\": a short subject line (max 8 words),',\n    '  - \"body\": the email body as a single string with \\\\n line breaks.',\n    '',\n    'Lead context:',\n    `  company: ${lead.company_name || lead.email_domain}`,\n    `  industry: ${industry}`,\n    `  employees: ${size}`,\n    `  country: ${country || 'n/a'}`,\n    `  name: ${name}`,\n    `  role: ${role}`,\n  ].join('\\n');\n}\n\n\n  const lead = $('Sanitize Lead').first().json;\n  const score = $('Parse Gemini Score').first().json;\n  const firmo = $('Parse Enrichment').first().json.firmographics || {};\n  const leadId = $('Dedup: Get or Create Lead').first().json.lead_id;\n  const prompt = buildOutreachPrompt(lead, score, firmo);\n  return [{ lead_id: leadId, email: lead.email, company_name: lead.company_name || lead.email_domain, prompt }];\n"
+        "jsCode": "/**\n * ============================================\n * n8n Code Node \u2014 v2 M5: Build Outreach Email Prompt\n * ============================================\n * For a ready_to_push OUTBOUND lead, build the Gemini prompt that writes a\n * personalized first-touch cold email. Runs only on the outbound ready_to_push\n * branch. No API key is touched here \u2014 the HTTP node does the call.\n *\n * Reads:\n *   $('Sanitize Lead')            -> { email, name, role, company_name, email_domain }\n *   $('Normalize Score Context')  -> { icp_score, fit, ... }\n *   $('Parse Enrichment')         -> { firmographics }\n *   $('Dedup: Get or Create Lead')-> { lead_id }\n *\n * Outputs (to \"Call Gemini (Outreach)\"):\n *   [{ lead_id, email, prompt }]\n * ============================================\n */\n\nfunction buildOutreachPrompt(lead, score, firmographics) {\n  const firmo = firmographics && typeof firmographics === 'object' ? firmographics : {};\n  const industry = firmo.industry || 'your industry';\n  const size = firmo.employee_count || 'your size';\n  const country = firmo.country || '';\n  const name = lead.name || 'there';\n  const role = lead.role || 'your team';\n  return [\n    'You are a B2B RevOps SDR writing a short, personalized FIRST outreach email.',\n    `Write a professional cold email to ${lead.company_name || lead.email_domain} (${industry}, ~${size} employees${country ? ', ' + country : ''}).`,\n    `Recipient: ${name}${role ? ' (' + role + ')' : ''}.`,\n    `Relevance score (ICP fit): ${score.icp_score ?? 'n/a'}/100.`,\n    'Rules:',\n    '  - Max 90 words; one clear value proposition; no links, no attachments, no hype.',\n    '  - Reference one signal from their company/role naturally (not generic).',\n    '  - End with a single low-pressure question.',\n    'Return a STRICT JSON object (no markdown, no commentary) with exactly:',\n    '  - \"subject\": a short subject line (max 8 words),',\n    '  - \"body\": the email body as a single string with \\\\n line breaks.',\n    '',\n    'Lead context:',\n    `  company: ${lead.company_name || lead.email_domain}`,\n    `  industry: ${industry}`,\n    `  employees: ${size}`,\n    `  country: ${country || 'n/a'}`,\n    `  name: ${name}`,\n    `  role: ${role}`,\n  ].join('\\n');\n}\n\n\n  const lead = $('Sanitize Lead').first().json;\n  const score = $('Normalize Score Context').first().json;\n  const firmo = $('Parse Enrichment').first().json.firmographics || {};\n  const leadId = $('Dedup: Get or Create Lead').first().json.lead_id;\n  const prompt = buildOutreachPrompt(lead, score, firmo);\n  return [{ lead_id: leadId, email: lead.email, company_name: lead.company_name || lead.email_domain, prompt }];\n"
       }
     },
     {
@@ -937,7 +1345,16 @@
       ],
       "parameters": {
         "method": "POST",
-        "url": "={{ $env.GEMINI_ENDPOINT + '?key=' + $env.GEMINI_API_KEY }}",
+        "url": "={{ $env.GEMINI_ENDPOINT.replace(/\\/$/, '') + '/' + $env.GEMINI_MODEL + ':generateContent' }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "x-goog-api-key",
+              "value": "={{ $env.GEMINI_API_KEY }}"
+            }
+          ]
+        },
         "sendBody": true,
         "specifyBody": "json",
         "jsonBody": "={{ JSON.stringify({ contents: [{ parts: [{ text: $json.prompt }] }], generationConfig: { temperature: 0.7, maxOutputTokens: 512 } }) }}",
@@ -946,9 +1363,14 @@
             "response": {
               "responseFormat": "json"
             }
-          }
+          },
+          "timeout": 30000
         }
-      }
+      },
+      "retryOnFail": false,
+      "maxTries": 1,
+      "waitBetweenTries": 0,
+      "onError": "stopWorkflow"
     },
     {
       "id": "code-outreach-parse",
@@ -983,9 +1405,14 @@
             "response": {
               "responseFormat": "json"
             }
-          }
+          },
+          "timeout": 30000
         }
-      }
+      },
+      "retryOnFail": false,
+      "maxTries": 1,
+      "waitBetweenTries": 0,
+      "onError": "stopWorkflow"
     },
     {
       "id": "if-outreach-send",
@@ -1028,7 +1455,7 @@
         240
       ],
       "parameters": {
-        "url": "={{ $env.BREVO_BASE_URL }}",
+        "url": "={{ $env.BREVO_BASE_URL.replace(/\\/$/, '') + '/v3/smtp/email' }}",
         "requestMethod": "POST",
         "jsonParameters": true,
         "headerParametersJson": "={{ JSON.stringify({ 'api-key': $env.BREVO_API_KEY }) }}",
@@ -1038,9 +1465,14 @@
             "response": {
               "responseFormat": "json"
             }
-          }
+          },
+          "timeout": 30000
         }
-      }
+      },
+      "retryOnFail": false,
+      "maxTries": 1,
+      "waitBetweenTries": 0,
+      "onError": "stopWorkflow"
     },
     {
       "id": "rpc-outreach-sent",
@@ -1062,9 +1494,14 @@
             "response": {
               "responseFormat": "json"
             }
-          }
+          },
+          "timeout": 30000
         }
-      }
+      },
+      "retryOnFail": false,
+      "maxTries": 1,
+      "waitBetweenTries": 0,
+      "onError": "stopWorkflow"
     },
     {
       "id": "rpc-lead-emailed",
@@ -1086,9 +1523,14 @@
             "response": {
               "responseFormat": "json"
             }
-          }
+          },
+          "timeout": 30000
         }
-      }
+      },
+      "retryOnFail": false,
+      "maxTries": 1,
+      "waitBetweenTries": 0,
+      "onError": "stopWorkflow"
     },
     {
       "id": "rpc-evaluate-outreach-sent",
@@ -1110,9 +1552,14 @@
             "response": {
               "responseFormat": "json"
             }
-          }
+          },
+          "timeout": 30000
         }
-      }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000,
+      "onError": "stopWorkflow"
     },
     {
       "id": "slack-outreach-sent",
@@ -1134,9 +1581,14 @@
             "response": {
               "responseFormat": "text"
             }
-          }
+          },
+          "timeout": 30000
         }
-      }
+      },
+      "retryOnFail": false,
+      "maxTries": 1,
+      "waitBetweenTries": 0,
+      "onError": "stopWorkflow"
     },
     {
       "id": "http-hs-outbound-contact",
@@ -1148,19 +1600,24 @@
         240
       ],
       "parameters": {
-        "url": "={{ $env.HUBSPOT_BASE_URL + '/crm/v3/objects/contacts?&idProperty=email' }}",
+        "url": "={{ $env.HUBSPOT_BASE_URL + '/crm/v3/objects/contacts/batch/upsert' }}",
         "requestMethod": "POST",
         "jsonParameters": true,
         "headerParametersJson": "={{ JSON.stringify({ Authorization: 'Bearer ' + $env.HUBSPOT_ACCESS_TOKEN }) }}",
-        "bodyParametersJson": "={{ JSON.stringify({ properties: { email: $('Sanitize Lead').first().json.email, company: $('Sanitize Lead').first().json.company_name || '', lead_source: 'outbound_scraped', outreach_status: 'emailed' } }) }}",
+        "bodyParametersJson": "={{ JSON.stringify({ inputs: [{ id: $('Sanitize Lead').first().json.email, idProperty: 'email', properties: { email: $('Sanitize Lead').first().json.email, company: $('Sanitize Lead').first().json.company_name || '' } }] }) }}",
         "options": {
           "response": {
             "response": {
               "responseFormat": "json"
             }
-          }
+          },
+          "timeout": 30000
         }
-      }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000,
+      "onError": "stopWorkflow"
     },
     {
       "id": "rpc-sales-sync-outbound-crm",
@@ -1182,9 +1639,14 @@
             "response": {
               "responseFormat": "json"
             }
-          }
+          },
+          "timeout": 30000
         }
-      }
+      },
+      "retryOnFail": false,
+      "maxTries": 1,
+      "waitBetweenTries": 0,
+      "onError": "stopWorkflow"
     },
     {
       "id": "rpc-log-gate-fail",
@@ -1206,9 +1668,14 @@
             "response": {
               "responseFormat": "json"
             }
-          }
+          },
+          "timeout": 30000
         }
-      }
+      },
+      "retryOnFail": false,
+      "maxTries": 1,
+      "waitBetweenTries": 0,
+      "onError": "stopWorkflow"
     },
     {
       "id": "if-crm-ready",
@@ -1251,19 +1718,24 @@
         0
       ],
       "parameters": {
-        "url": "={{ $env.HUBSPOT_BASE_URL + '/crm/v3/objects/contacts?&idProperty=email' }}",
+        "url": "={{ $env.HUBSPOT_BASE_URL + '/crm/v3/objects/contacts/batch/upsert' }}",
         "requestMethod": "POST",
         "jsonParameters": true,
         "headerParametersJson": "={{ JSON.stringify({ Authorization: 'Bearer ' + $env.HUBSPOT_ACCESS_TOKEN }) }}",
-        "bodyParametersJson": "={{ JSON.stringify({ properties: { email: $('Sanitize Lead').first().json.email, company: $('Sanitize Lead').first().json.company_name || '' } }) }}",
+        "bodyParametersJson": "={{ JSON.stringify({ inputs: [{ id: $('Sanitize Lead').first().json.email, idProperty: 'email', properties: { email: $('Sanitize Lead').first().json.email, company: $('Sanitize Lead').first().json.company_name || '' } }] }) }}",
         "options": {
           "response": {
             "response": {
               "responseFormat": "json"
             }
-          }
+          },
+          "timeout": 30000
         }
-      }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000,
+      "onError": "stopWorkflow"
     },
     {
       "id": "code-hs-contact-context",
@@ -1298,9 +1770,14 @@
             "response": {
               "responseFormat": "json"
             }
-          }
+          },
+          "timeout": 30000
         }
-      }
+      },
+      "retryOnFail": false,
+      "maxTries": 1,
+      "waitBetweenTries": 0,
+      "onError": "stopWorkflow"
     },
     {
       "id": "rpc-sales-sync-inbound-crm",
@@ -1322,9 +1799,14 @@
             "response": {
               "responseFormat": "json"
             }
-          }
+          },
+          "timeout": 30000
         }
-      }
+      },
+      "retryOnFail": false,
+      "maxTries": 1,
+      "waitBetweenTries": 0,
+      "onError": "stopWorkflow"
     },
     {
       "id": "http-slack-qualified",
@@ -1340,15 +1822,20 @@
         "url": "={{ $env.SLACK_WEBHOOK_URL }}",
         "sendBody": true,
         "specifyBody": "json",
-        "jsonBody": "={{ JSON.stringify({ text: '\ud83d\ude80 QUALIFIED LEAD: ' + ($('Sanitize Lead').first().json.company_name || 'Unknown') + ' (' + $('Sanitize Lead').first().json.email + ')\\nICP score: ' + $('Parse Gemini Score').first().json.icp_score + '/100 \u00b7 Intent: ' + $('Parse Gemini Score').first().json.buying_intent + '\\nOwner: ' + (($('Route Lead to Sales (Inbound)').first().json.current_owner_type || 'unassigned').toUpperCase()) + ' \u00b7 Priority: ' + ($('Route Lead to Sales (Inbound)').first().json.priority_tier || 'low') + ' \u00b7 Route: ' + ($('Route Lead to Sales (Inbound)').first().json.routing_reason || 'n/a') + '\\nIcebreaker: ' + ($('Parse Gemini Score').first().json.personalized_icebreaker || '\u2014') + '\\nDeal: ' + $json.url }) }}",
+        "jsonBody": "={{ JSON.stringify({ text: '\ud83d\ude80 QUALIFIED LEAD: ' + ($('Sanitize Lead').first().json.company_name || 'Unknown') + ' (' + $('Sanitize Lead').first().json.email + ')\\nICP score: ' + $('Normalize Score Context').first().json.icp_score + '/100 \u00b7 Fit: ' + $('Normalize Score Context').first().json.fit + ' \u00b7 Signup intent: unknown\\nOwner: ' + (($('Route Lead to Sales (Inbound)').first().json.current_owner_type || 'unassigned').toUpperCase()) + ' \u00b7 Priority: ' + ($('Route Lead to Sales (Inbound)').first().json.priority_tier || 'low') + ' \u00b7 Route: ' + ($('Route Lead to Sales (Inbound)').first().json.routing_reason || 'n/a') + '\\nIcebreaker: ' + ($('Normalize Score Context').first().json.personalized_icebreaker || '\u2014') + '\\nDeal: ' + $json.url }) }}",
         "options": {
           "response": {
             "response": {
               "responseFormat": "text"
             }
-          }
+          },
+          "timeout": 30000
         }
-      }
+      },
+      "retryOnFail": false,
+      "maxTries": 1,
+      "waitBetweenTries": 0,
+      "onError": "stopWorkflow"
     },
     {
       "id": "rpc-sales-sync-inbound-slack",
@@ -1370,9 +1857,14 @@
             "response": {
               "responseFormat": "json"
             }
-          }
+          },
+          "timeout": 30000
         }
-      }
+      },
+      "retryOnFail": false,
+      "maxTries": 1,
+      "waitBetweenTries": 0,
+      "onError": "stopWorkflow"
     },
     {
       "id": "http-slack-nurture",
@@ -1388,15 +1880,20 @@
         "url": "={{ $env.SLACK_WEBHOOK_URL }}",
         "sendBody": true,
         "specifyBody": "json",
-        "jsonBody": "={{ JSON.stringify({ text: '\ud83c\udf31 NURTURE: ' + ($('Sanitize Lead').first().json.company_name || 'Unknown') + ' (' + $('Sanitize Lead').first().json.email + ') \u2014 ICP ' + $('Parse Gemini Score').first().json.icp_score + '/100. Not CRM-ready yet.' }) }}",
+        "jsonBody": "={{ JSON.stringify({ text: '\ud83c\udf31 NURTURE: ' + ($('Sanitize Lead').first().json.company_name || 'Unknown') + ' (' + $('Sanitize Lead').first().json.email + ') \u2014 ' + ($('Normalize Score Context').first().json.scoring_status === 'completed' ? ('ICP ' + $('Normalize Score Context').first().json.icp_score + '/100 \u00b7 fit ' + $('Normalize Score Context').first().json.fit) : 'low confidence: insufficient firmographic evidence') + '. Not CRM-ready yet.' }) }}",
         "options": {
           "response": {
             "response": {
               "responseFormat": "text"
             }
-          }
+          },
+          "timeout": 30000
         }
-      }
+      },
+      "retryOnFail": false,
+      "maxTries": 1,
+      "waitBetweenTries": 0,
+      "onError": "stopWorkflow"
     },
     {
       "id": "if-nurture-email",
@@ -1423,6 +1920,15 @@
                 "type": "string",
                 "operation": "notEmpty"
               }
+            },
+            {
+              "id": "cond-scoring-complete",
+              "leftValue": "={{ $('Normalize Score Context').first().json.scoring_status }}",
+              "rightValue": "completed",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
             }
           ]
         },
@@ -1439,7 +1945,7 @@
         520
       ],
       "parameters": {
-        "jsCode": "/**\n * ============================================\n * n8n Code Node \u2014 Module 4: Build Nurture Email Prompt\n * ============================================\n * Paste this into an n8n \"Code\" node (JavaScript mode).\n *\n * Purpose:\n *   For a NURTURE lead (icp_score < 70, not CRM-ready), build a Gemini\n *   prompt that writes a short, personalized follow-up email. Runs only\n *   on the nurture branch, and only when BREVO_API_KEY is set (env-gated).\n *\n * Business rules (see .clinerules):\n *   * Nurture leads are NOT sent to HubSpot \u2014 they get an email instead.\n *   * Gemini writes the copy (subject + body), keeps it short and human.\n *   * No API key is touched in this node \u2014 the HTTP node does the call.\n *\n * Reads:\n *   $('Sanitize Lead')            -> { email, company_name, firmographics }\n *   $('Parse Gemini Score')       -> { icp_score, buying_intent, personalized_icebreaker }\n *   $('Dedup: Get or Create Lead')-> { lead_id }\n *\n * Outputs (to \"Call Gemini (Nurture Email)\"):\n *   [{ lead_id, prompt, email, company_name }]\n * ============================================\n */\n\n/** Build the prompt that instructs Gemini to write the nurture email. */\nfunction buildNurturePrompt(leadInfo, scoreInfo, firmographics) {\n  return [\n    'You are a B2B RevOps assistant writing a nurture follow-up email.',\n    'The prospect is not yet ready to buy but is worth staying in touch with.',\n    'Write a SHORT, friendly, professional email (max 120 words) that:',\n    '  - references their company/industry signal naturally,',\n    '  - offers one useful, low-pressure value point,',\n    '  - ends with a soft question (not a sales pitch).',\n    'Return a STRICT JSON object (no markdown, no commentary) with exactly:',\n    '  - \"subject\": a short subject line (max 8 words),',\n    '  - \"body\": the email body as a single string with \\\\n line breaks.',\n    '',\n    'Lead context:',\n    JSON.stringify({\n      company: leadInfo.company_name,\n      email: leadInfo.email,\n      icp_score: scoreInfo.icp_score,\n      buying_intent: scoreInfo.buying_intent,\n      icebreaker: scoreInfo.personalized_icebreaker,\n      firmographics: firmographics || {},\n    }, null, 2),\n    '',\n    'Respond with only the JSON object.',\n  ].join('\\n');\n}\n\n\n  const lead = $('Sanitize Lead').first().json;\n  const score = $('Parse Gemini Score').first().json;\n  const dedup = $('Dedup: Get or Create Lead').first().json;\n\n  return [{\n    lead_id: dedup.lead_id,\n    email: lead.email,\n    company_name: lead.company_name,\n    prompt: buildNurturePrompt(\n      { company_name: lead.company_name, email: lead.email },\n      { icp_score: score.icp_score, buying_intent: score.buying_intent, personalized_icebreaker: score.personalized_icebreaker },\n      lead.firmographics\n    ),\n  }];\n"
+        "jsCode": "/**\n * ============================================\n * n8n Code Node \u2014 Module 4: Build Nurture Email Prompt\n * ============================================\n * Paste this into an n8n \"Code\" node (JavaScript mode).\n *\n * Purpose:\n *   For a NURTURE lead (icp_score < 70, not CRM-ready), build a Gemini\n *   prompt that writes a short, personalized follow-up email. Runs only\n *   on the nurture branch, and only when BREVO_API_KEY is set (env-gated).\n *\n * Business rules (see .clinerules):\n *   * Nurture leads are NOT sent to HubSpot \u2014 they get an email instead.\n *   * Gemini writes the copy (subject + body), keeps it short and human.\n *   * No API key is touched in this node \u2014 the HTTP node does the call.\n *\n * Reads:\n *   $('Sanitize Lead')            -> { email, company_name, firmographics }\n *   $('Normalize Score Context')  -> { icp_score, fit, personalized_icebreaker }\n *   $('Dedup: Get or Create Lead')-> { lead_id }\n *\n * Outputs (to \"Call Gemini (Nurture Email)\"):\n *   [{ lead_id, prompt, email, company_name }]\n * ============================================\n */\n\n/** Build the prompt that instructs Gemini to write the nurture email. */\nfunction buildNurturePrompt(leadInfo, scoreInfo, firmographics) {\n  return [\n    'You are a B2B RevOps assistant writing a nurture follow-up email.',\n    'The prospect has not shown explicit buying intent; do not imply that they have.',\n    'Write a SHORT, friendly, professional email (max 120 words) that:',\n    '  - references their company/industry signal naturally,',\n    '  - offers one useful, low-pressure value point,',\n    '  - ends with a soft question (not a sales pitch).',\n    'Return a STRICT JSON object (no markdown, no commentary) with exactly:',\n    '  - \"subject\": a short subject line (max 8 words),',\n    '  - \"body\": the email body as a single string with \\\\n line breaks.',\n    '',\n    'Lead context:',\n    JSON.stringify({\n      company: leadInfo.company_name,\n      email: leadInfo.email,\n      icp_score: scoreInfo.icp_score,\n      fit: scoreInfo.fit,\n      icebreaker: scoreInfo.personalized_icebreaker,\n      firmographics: firmographics || {},\n    }, null, 2),\n    '',\n    'Respond with only the JSON object.',\n  ].join('\\n');\n}\n\n\n  const lead = $('Sanitize Lead').first().json;\n  const score = $('Normalize Score Context').first().json;\n  const dedup = $('Dedup: Get or Create Lead').first().json;\n  const firmographics = $('Parse Enrichment').first().json.firmographics || {};\n\n  return [{\n    lead_id: dedup.lead_id,\n    email: lead.email,\n    company_name: lead.company_name,\n    prompt: buildNurturePrompt(\n      { company_name: lead.company_name, email: lead.email },\n      { icp_score: score.icp_score, fit: score.fit, personalized_icebreaker: score.personalized_icebreaker },\n      firmographics\n    ),\n  }];\n"
       }
     },
     {
@@ -1453,7 +1959,16 @@
       ],
       "parameters": {
         "method": "POST",
-        "url": "={{ $env.GEMINI_ENDPOINT + '?key=' + $env.GEMINI_API_KEY }}",
+        "url": "={{ $env.GEMINI_ENDPOINT.replace(/\\/$/, '') + '/' + $env.GEMINI_MODEL + ':generateContent' }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "x-goog-api-key",
+              "value": "={{ $env.GEMINI_API_KEY }}"
+            }
+          ]
+        },
         "sendBody": true,
         "specifyBody": "json",
         "jsonBody": "={{ JSON.stringify({ contents: [{ parts: [{ text: $json.prompt }] }], generationConfig: { temperature: 0.7, maxOutputTokens: 512 } }) }}",
@@ -1462,9 +1977,14 @@
             "response": {
               "responseFormat": "json"
             }
-          }
+          },
+          "timeout": 30000
         }
-      }
+      },
+      "retryOnFail": false,
+      "maxTries": 1,
+      "waitBetweenTries": 0,
+      "onError": "stopWorkflow"
     },
     {
       "id": "code-nurture-parse",
@@ -1489,7 +2009,7 @@
         520
       ],
       "parameters": {
-        "url": "={{ $env.BREVO_BASE_URL }}",
+        "url": "={{ $env.BREVO_BASE_URL.replace(/\\/$/, '') + '/v3/smtp/email' }}",
         "requestMethod": "POST",
         "jsonParameters": true,
         "headerParametersJson": "={{ JSON.stringify({ 'api-key': $env.BREVO_API_KEY }) }}",
@@ -1499,9 +2019,14 @@
             "response": {
               "responseFormat": "json"
             }
-          }
+          },
+          "timeout": 30000
         }
-      }
+      },
+      "retryOnFail": false,
+      "maxTries": 1,
+      "waitBetweenTries": 0,
+      "onError": "stopWorkflow"
     },
     {
       "id": "rpc-log-nurture-email",
@@ -1523,9 +2048,14 @@
             "response": {
               "responseFormat": "json"
             }
-          }
+          },
+          "timeout": 30000
         }
-      }
+      },
+      "retryOnFail": false,
+      "maxTries": 1,
+      "waitBetweenTries": 0,
+      "onError": "stopWorkflow"
     },
     {
       "id": "rpc-evaluate-nurture",
@@ -1547,9 +2077,14 @@
             "response": {
               "responseFormat": "json"
             }
-          }
+          },
+          "timeout": 30000
         }
-      }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000,
+      "onError": "stopWorkflow"
     },
     {
       "id": "rpc-log-spam",
@@ -1571,17 +2106,22 @@
             "response": {
               "responseFormat": "json"
             }
-          }
+          },
+          "timeout": 30000
         }
-      }
+      },
+      "retryOnFail": false,
+      "maxTries": 1,
+      "waitBetweenTries": 0,
+      "onError": "stopWorkflow"
     }
   ],
   "connections": {
-    "Webhook - Hookdeck Ingest": {
+    "Webhook - Backend Ingest": {
       "main": [
         [
           {
-            "node": "Anti-Abuse Gate",
+            "node": "Validate Backend Dispatch Secret",
             "type": "main",
             "index": 0
           }
@@ -1589,6 +2129,79 @@
       ]
     },
     "Webhook - Outbound Ingest": {
+      "main": [
+        [
+          {
+            "node": "Validate Backend Dispatch Secret",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Validate Backend Dispatch Secret": {
+      "main": [
+        [
+          {
+            "node": "Backend Dispatch Authorized?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Backend Dispatch Authorized?": {
+      "main": [
+        [
+          {
+            "node": "Respond: Dispatch Accepted",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Respond: Unauthorized",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Respond: Dispatch Accepted": {
+      "main": [
+        [
+          {
+            "node": "Anti-Abuse: Count Recent IP Leads",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Anti-Abuse: Count Recent IP Leads": {
+      "main": [
+        [
+          {
+            "node": "Anti-Abuse: Count Daily Leads",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Anti-Abuse: Count Daily Leads": {
+      "main": [
+        [
+          {
+            "node": "Anti-Abuse: Attach Counters",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Anti-Abuse: Attach Counters": {
       "main": [
         [
           {
@@ -1854,11 +2467,41 @@
       "main": [
         [
           {
-            "node": "Call Gemini API",
+            "node": "Gemini Scoring Required?",
             "type": "main",
             "index": 0
           }
         ]
+      ]
+    },
+    "Gemini Scoring Required?": {
+      "main": [
+        [
+          {
+            "node": "Call Gemini API",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Deterministic Qualification Required?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Deterministic Qualification Required?": {
+      "main": [
+        [
+          {
+            "node": "Build Low-Confidence Qualification",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        []
       ]
     },
     "Call Gemini API": {
@@ -1869,10 +2512,57 @@
             "type": "main",
             "index": 0
           }
+        ],
+        [
+          {
+            "node": "Normalize Gemini Scoring Failure",
+            "type": "main",
+            "index": 0
+          }
         ]
       ]
     },
     "Parse Gemini Score": {
+      "main": [
+        [
+          {
+            "node": "Normalize Score Context",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Normalize Gemini Scoring Failure",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Normalize Gemini Scoring Failure": {
+      "main": [
+        [
+          {
+            "node": "Record Gemini Scoring Failure",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Low-Confidence Qualification": {
+      "main": [
+        [
+          {
+            "node": "Normalize Score Context",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Normalize Score Context": {
       "main": [
         [
           {

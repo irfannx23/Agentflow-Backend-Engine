@@ -1,9 +1,9 @@
 # The prototype has one model deployment and receives all credentials from
 # Docker environment variables. Keep this file safe to commit: no secrets here.
 model_list:
-  - model_name: automation-engine-deepseek-chat
+  - model_name: automation-engine-deepseek
     litellm_params:
-      model: deepseek/deepseek-chat
+      model: os.environ/DEEPSEEK_MODEL
       api_key: os.environ/DEEPSEEK_API_KEY
       api_base: os.environ/DEEPSEEK_BASE_URL
 

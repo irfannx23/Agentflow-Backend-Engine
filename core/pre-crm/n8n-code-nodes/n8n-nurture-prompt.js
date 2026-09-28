@@ -16,7 +16,7 @@
  *
  * Reads:
  *   $('Sanitize Lead')            -> { email, company_name, firmographics }
- *   $('Parse Gemini Score')       -> { icp_score, buying_intent, personalized_icebreaker }
+ *   $('Normalize Score Context')  -> { icp_score, fit, personalized_icebreaker }
  *   $('Dedup: Get or Create Lead')-> { lead_id }
  *
  * Outputs (to "Call Gemini (Nurture Email)"):
@@ -28,7 +28,7 @@
 function buildNurturePrompt(leadInfo, scoreInfo, firmographics) {
   return [
     'You are a B2B RevOps assistant writing a nurture follow-up email.',
-    'The prospect is not yet ready to buy but is worth staying in touch with.',
+    'The prospect has not shown explicit buying intent; do not imply that they have.',
     'Write a SHORT, friendly, professional email (max 120 words) that:',
     '  - references their company/industry signal naturally,',
     '  - offers one useful, low-pressure value point,',
@@ -42,7 +42,7 @@ function buildNurturePrompt(leadInfo, scoreInfo, firmographics) {
       company: leadInfo.company_name,
       email: leadInfo.email,
       icp_score: scoreInfo.icp_score,
-      buying_intent: scoreInfo.buying_intent,
+      fit: scoreInfo.fit,
       icebreaker: scoreInfo.personalized_icebreaker,
       firmographics: firmographics || {},
     }, null, 2),
@@ -53,8 +53,9 @@ function buildNurturePrompt(leadInfo, scoreInfo, firmographics) {
 
 export default function buildNurtureEmailPrompt() {
   const lead = $('Sanitize Lead').first().json;
-  const score = $('Parse Gemini Score').first().json;
+  const score = $('Normalize Score Context').first().json;
   const dedup = $('Dedup: Get or Create Lead').first().json;
+  const firmographics = $('Parse Enrichment').first().json.firmographics || {};
 
   return [{
     lead_id: dedup.lead_id,
@@ -62,8 +63,8 @@ export default function buildNurtureEmailPrompt() {
     company_name: lead.company_name,
     prompt: buildNurturePrompt(
       { company_name: lead.company_name, email: lead.email },
-      { icp_score: score.icp_score, buying_intent: score.buying_intent, personalized_icebreaker: score.personalized_icebreaker },
-      lead.firmographics
+      { icp_score: score.icp_score, fit: score.fit, personalized_icebreaker: score.personalized_icebreaker },
+      firmographics
     ),
   }];
 }

@@ -2,10 +2,12 @@
 >
 > This document remains useful historical/reference material for the original Pre-CRM engine.
 >
-> Current source of truth:
-> `CODEX.md`, `TASK.md`, `STATE.md`, `ARCHITECTURE.md`, `Docs/Architecture/API_SPEC.md`, `CHANGELOG.md`, `README.md`, `FILE_STRUCTURE.md`
+> This page is not an operating guide and its URLs, provider assumptions, metrics,
+> and topology must not be used for deployment. Current source of truth:
+> `README.md`, `docs/architecture.md`, `docs/pre-crm-engine.md`, and canonical
+> workflow JSON under `workflows/`.
 
-# Pre-CRM Engine — Complete Overview & Playbook
+# Archived Pre-CRM Engine — Complete Overview & Playbook
 
 **Why this page is used:** This is the master reference for Project 1 of the Triple Gatekeeper Portfolio. If I ever forget how this was built — or a beginner/recruiter wants to understand it — this page explains the whole thing from zero: what it is, why it matters, how every piece works, how it was built step by step, and how to run it again.
 
@@ -54,7 +56,7 @@ Inbound webhook (form / site event)
         ▼
 [Stage 5] Anti-ICP — block unsupported jurisdictions (KP/IR/CU/SY/BY/RU/VE/MM/SD/ZW)
         ▼
-[Stage 6] Score — Gemini AI: icp_score 0–100, buying_intent, personalized icebreaker
+[Stage 6] Score — Gemini AI: ICP score/fit, signup intent unknown, evidence-based explanation and icebreaker
         ▼
 [Module 4] Route —
         ├─ icp_score ≥ 70 → HubSpot deal + contact (associated) → Slack alert to sales
@@ -107,7 +109,7 @@ Two layers of jurisdiction blocking:
 Blocked leads are stored with status `disqualified` and a timeline event — **never scored, never CRM'd**. *17/17 + 30/30 unit tests.*
 
 ### Stage 6 — Score (the brain)
-Gemini (2.5-flash-lite) reads the firmographics and returns strict JSON: `icp_score` (0–100), `buying_intent` (high/medium/low), and a personalized icebreaker (a custom opening line for the sales rep). Score ≥ 70 → `qualified`; < 70 → `nurture`. Duplicates are never re-scored (saves API quota).
+The model selected by `GEMINI_MODEL` reads normalized Apollo/signup firmographics and returns strict JSON: `icp_score` (0–100), `fit` (high/medium/low), `buying_intent` (`unknown` at signup), an evidence-based reason, a factual company summary, and a personalized icebreaker. Score ≥ 70 → `qualified`; < 70 → `nurture`. Duplicates are never re-scored. Apollo no-match produces an explicit low-confidence nurture outcome without calling Gemini.
 
 ### Module 4 — Route (the dispatcher)
 - **Qualified (≥ 70):** upserts a HubSpot contact by email → creates a HubSpot deal associated to that contact → posts a Slack alert with company, score, intent, icebreaker, and the deal URL. **Speed-to-lead: seconds, not hours.**

@@ -8,7 +8,7 @@ test('all capability registries contain unique typed entries', () => {
   assert.equal(workflowRegistry.list().length, 3)
   assert.equal(triggerRegistry.list().length, 10)
   assert.equal(actionRegistry.list().length, 11)
-  assert.equal(integrationRegistry.list().length, 11)
+  assert.equal(integrationRegistry.list().length, 10)
 })
 
 test('workflow and capability registry references are valid', async () => {
@@ -27,7 +27,8 @@ test('every workflow exposes the complete registry contract', () => {
     assert.ok(workflow.inputSchema.length > 0)
     assert.ok(workflow.outputSchema.length > 0)
     assert.ok(workflow.validation.length > 0)
-    assert.equal(workflow.health.status, 'healthy')
+    assert.ok(['healthy', 'degraded', 'unvalidated'].includes(workflow.health.status))
+    assert.notEqual(workflow.health.status, 'healthy')
     assert.ok(workflow.runtimePolicy.timeoutMs > 0)
     assert.equal(workflow.repairCompatibility.preservesRpcContracts, true)
     assert.equal(workflow.owner, 'agentflow-backend-engine')

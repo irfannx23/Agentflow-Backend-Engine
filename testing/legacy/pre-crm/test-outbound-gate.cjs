@@ -13,7 +13,7 @@ const outboundGate = mod.exports.outboundGate;
 function run(mxResponse, scoreJson) {
   global.$json = mxResponse;
   global.$ = (nodeName) => {
-    if (nodeName === 'Parse Gemini Score') return { first: () => ({ json: scoreJson }) };
+    if (nodeName === 'Normalize Score Context') return { first: () => ({ json: scoreJson }) };
     return { first: () => ({ json: {} }) };
   };
   return outboundGate()[0];
@@ -27,7 +27,7 @@ function check(name, got, expected) {
 }
 
 // MX ok + high score -> pass
-let r = run({ hasMx: true, domain: 'example.com' }, { icp_score: 82, buying_intent: 'high' });
+let r = run({ hasMx: true, domain: 'example.com' }, { icp_score: 82, buying_intent: 'unknown' });
 check('mx-ok + 82 -> pass', r.outbound_gate, 'pass');
 check('pass reason null', r.outbound_reason, null);
 

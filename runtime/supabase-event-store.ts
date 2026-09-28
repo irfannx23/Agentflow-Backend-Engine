@@ -5,7 +5,17 @@ import type { QualificationEvidence } from '../core/revops/contracts/qualificati
 import type { CustomerHealthEvaluationResult } from '../core/revops/contracts/retention-contract.js'
 import { readSupabaseRuntimeConfig, type SupabaseRuntimeConfig } from './supabase-config.js'
 
+const AGENTFLOW_EVENT_SOURCE = 'web_app'
+const AGENTFLOW_EVENT_TRUST_LEVEL = 'trusted'
+
 export type StoredEvent = { id: string; duplicate: boolean }
+export type WorkflowDispatchOutboxItem = {
+  id: string
+  eventId: string
+  workflowId: string
+  payload: Readonly<Record<string, unknown>>
+  retryCount: number
+}
 
 export interface IntelligenceStore {
   persistEvent(event: AgentFlowEvent): Promise<StoredEvent>
@@ -13,6 +23,9 @@ export interface IntelligenceStore {
   evaluateQualification(leadId: number): Promise<QualificationEvidence | undefined>
   evaluateHealth(accountId: string): Promise<CustomerHealthEvaluationResult | undefined>
   generateRevOpsSignals(accountId: string): Promise<readonly PersistedRevOpsSignal[]>
+  enqueueWorkflowDispatch(eventId: string, workflowId: string, payload: Readonly<Record<string, unknown>>): Promise<void>
+  claimWorkflowDispatches(eventId?: string, limit?: number): Promise<readonly WorkflowDispatchOutboxItem[]>
+  resolveWorkflowDispatch(id: string, result: { succeeded: boolean; permanent: boolean; error?: string }): Promise<void>
 }
 
 type JsonRecord = Record<string, unknown>
@@ -47,9 +60,10 @@ export class SupabaseIntelligenceStore implements IntelligenceStore {
         projectId: event.projectId,
         workspaceId: event.workspaceId,
         contractVersion: event.version,
+        integrationSource: event.source,
       },
-      event_source: event.source,
-      event_trust_level: 'verified_server',
+      event_source: AGENTFLOW_EVENT_SOURCE,
+      event_trust_level: AGENTFLOW_EVENT_TRUST_LEVEL,
       firebase_uid: event.userId,
       occurred_at: event.timestamp,
     }
@@ -73,7 +87,8 @@ export class SupabaseIntelligenceStore implements IntelligenceStore {
     const query = new URLSearchParams({
       select: 'event_id,event_name,event_properties,event_source,firebase_uid,occurred_at',
       firebase_uid: `eq.${event.userId}`,
-      event_source: 'eq.agentflow',
+      event_source: `eq.${AGENTFLOW_EVENT_SOURCE}`,
+      'event_properties->>integrationSource': 'eq.agentflow',
       order: 'occurred_at.desc',
       limit: '250',
     })
@@ -95,7 +110,7 @@ export class SupabaseIntelligenceStore implements IntelligenceStore {
         projectId: typeof properties.projectId === 'string' ? properties.projectId : null,
         workspaceId: typeof properties.workspaceId === 'string' ? properties.workspaceId : null,
         metadata: properties,
-        source: row.event_source,
+        source: properties.integrationSource,
         version: properties.contractVersion,
       })
       if (!validation.valid) return []
@@ -135,6 +150,63 @@ export class SupabaseIntelligenceStore implements IntelligenceStore {
         source: 'generate_revops_signals',
         createdAt: now,
       }]
+    })
+  }
+
+  async enqueueWorkflowDispatch(
+    eventId: string,
+    workflowId: string,
+    payload: Readonly<Record<string, unknown>>,
+  ): Promise<void> {
+    const response = await fetch(`${this.config.url}/rest/v1/workflow_dispatch_outbox?on_conflict=event_id,workflow_id`, {
+      method: 'POST',
+      headers: {
+        apikey: this.config.serviceRoleKey,
+        Authorization: `Bearer ${this.config.serviceRoleKey}`,
+        'Content-Type': 'application/json',
+        Prefer: 'resolution=ignore-duplicates,return=minimal',
+      },
+      body: JSON.stringify({ event_id: eventId, workflow_id: workflowId, payload }),
+      signal: AbortSignal.timeout(15_000),
+    })
+    if (!response.ok) throw new Error(`supabase_dispatch_enqueue_failed:${response.status}`)
+  }
+
+  async claimWorkflowDispatches(eventId?: string, limit = 25): Promise<readonly WorkflowDispatchOutboxItem[]> {
+    const rows = await this.request('/rest/v1/rpc/claim_workflow_dispatches', {
+      method: 'POST',
+      body: JSON.stringify({ p_event_id: eventId ?? null, p_limit: limit }),
+    }) as Array<{
+      id?: string
+      event_id?: string
+      workflow_id?: string
+      payload?: JsonRecord
+      retry_count?: number
+    }>
+    return rows.flatMap((row): WorkflowDispatchOutboxItem[] => {
+      if (!row.id || !row.event_id || !row.workflow_id || !row.payload) return []
+      return [{
+        id: row.id,
+        eventId: row.event_id,
+        workflowId: row.workflow_id,
+        payload: row.payload,
+        retryCount: row.retry_count ?? 0,
+      }]
+    })
+  }
+
+  async resolveWorkflowDispatch(
+    id: string,
+    result: { succeeded: boolean; permanent: boolean; error?: string },
+  ): Promise<void> {
+    await this.request('/rest/v1/rpc/resolve_workflow_dispatch', {
+      method: 'POST',
+      body: JSON.stringify({
+        p_id: id,
+        p_succeeded: result.succeeded,
+        p_permanent: result.permanent,
+        p_error: result.error?.slice(0, 1_000) ?? null,
+      }),
     })
   }
 }

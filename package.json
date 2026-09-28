@@ -1,12 +1,13 @@
 {
   "name": "agentflow-backend-engine",
   "version": "0.1.0",
-  "description": "Product-neutral automation backend for AgentFlow-compatible workflow systems.",
+  "description": "Production-oriented event automation and RevOps intelligence engine powering AgentFlow.",
   "private": true,
   "type": "module",
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "start:events": "pnpm build && node dist/runtime/start-event-server.js",
+    "mx:start": "node dist/integrations/mx-service/mx-service.js",
+    "start:events": "pnpm build && node --env-file-if-exists=.env dist/runtime/start-event-server.js",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "lint": "eslint . --max-warnings=0",
     "test": "pnpm build && node --test dist/testing/*.test.js",

@@ -1,79 +1,90 @@
-/**
- * ============================================
- * n8n Code Node — Stage 6a: Build Gemini Scoring Prompt
- * ============================================
- * Paste this into an n8n "Code" node (JavaScript mode).
- *
- * Purpose:
- *   Decide whether a NEW lead should be scored, and if so build the
- *   Gemini prompt from its firmographics. This node NEVER touches the
- *   API key — the actual API call is made by the "Call Gemini API"
- *   HTTP Request node (credential: Gemini API Key (dev)), and the
- *   response is validated by "Parse Gemini Score".
- *
- * Business rules (see .clinerules):
- *   * Only NEW leads are scored (duplicates would burn API quota re-scoring).
- *   * Leads without firmographic signal are skipped silently.
- *   * icp_score >= 70 -> status 'qualified', else -> 'nurture'
- *     (Module 4 routing happens later; Stage 6 only persists the score).
- *
- * Reads from:
- *   $('Normalize Lead Context')    -> { lead_id, is_new }
- *   $('Sanitize Lead')            -> { firmographics }
- *
- * Outputs (to "Call Gemini API"):
- *   [{ lead_id, prompt }]   -> score this lead
- *   []                      -> skip (duplicate / no firmographics)
- * ============================================
- */
-
-/** Build the prompt that instructs Gemini to score the lead. */
+/** Build AgentFlow's signup ICP prompt from normalized firmographics only. */
 function buildScoringPrompt(firmographics) {
   return [
-    'You are a B2B RevOps lead-scoring assistant.',
-    'Analyze the following enriched firmographic data for a prospective company.',
-    'Return a STRICT JSON object (no markdown, no commentary) with exactly these keys:',
-    '  - "icp_score": an integer from 0 to 100 representing how well the company fits our ICP.',
-    '  - "buying_intent": one of "high", "medium", or "low" based on signals like tech stack maturity and monthly spend.',
-    '  - "personalized_icebreaker": a short, professional, personalized opening message (max 2 sentences) referencing the company\'s tech stack and monthly spend.',
+    'You are the lead qualification intelligence layer for AgentFlow, an AI-powered workflow automation platform.',
     '',
-    'Firmographic data:',
+    'Evaluate the prospective organization using ONLY the firmographic and enrichment information supplied.',
+    '',
+    'AgentFlow is relevant to organizations that could benefit from:',
+    '- AI-powered workflow automation',
+    '- n8n/API/integration automation',
+    '- repetitive operational-process automation',
+    '- GTM/RevOps automation',
+    '- AI workflow generation/orchestration',
+    '- multi-system integration',
+    '',
+    'Assess company fit using available evidence such as industry, employee count, geography, organization description, growth or funding indicators, technologies only when explicitly supplied, and other supplied enrichment attributes.',
+    '',
+    'Return STRICT JSON with exactly these keys:',
+    '{"icp_score":0,"fit":"low","buying_intent":"unknown","qualification_reason":"","company_summary":"","personalized_icebreaker":""}',
+    '',
+    'Rules:',
+    '- icp_score must be an integer from 0 to 100.',
+    '- fit must be "high", "medium", or "low" and must agree with the score and evidence.',
+    '- buying_intent must be "unknown". Firmographic fit is not buying intent.',
+    '- qualification_reason must be a brief evidence-based explanation.',
+    '- company_summary must be brief and factual.',
+    '- personalized_icebreaker must be 1-2 professional sentences using known data only.',
+    '- Never invent missing information.',
+    '- Never infer budget, monthly spend, pain points, or purchase intent.',
+    '- Never invent technology usage. Mention technologies only when they appear in the supplied object.',
+    '- Missing enrichment must reduce confidence and fit rather than cause fabrication.',
+    '- Personal email domains without reliable organization enrichment are low-confidence and must not produce invented company data.',
+    '- No markdown and no commentary outside the JSON object.',
+    '',
+    'Normalized firmographic data:',
     JSON.stringify(firmographics, null, 2),
-    '',
-    'Respond with only the JSON object.',
   ].join('\n');
 }
 
 export default function scoreLeadWithGemini() {
   const leadContext = $('Normalize Lead Context').first().json || {};
-  // Firmographics come from the enrichment merger (Stage 4) — which passes
-  // the sanitizer's firmographics through unchanged when enrichment is off.
-  const enriched = $('Parse Enrichment').first().json;
-  const firmographics = (enriched && enriched.firmographics) || {};
+  const enriched = $('Parse Enrichment').first().json || {};
+  const firmographics = enriched.firmographics || {};
 
-  // Only score brand-new leads: duplicates already got a timeline event.
   if (!leadContext.is_new) {
-    return [];
-  }
-
-  // Need at least one firmographic signal to score meaningfully.
-  const hasSignal =
-    firmographics &&
-    (firmographics.company_name ||
-      firmographics.industry ||
-      firmographics.employees ||
-      firmographics.tech_stack ||
-      firmographics.monthly_spend ||
-      firmographics.domain);
-
-  if (!hasSignal) {
-    return []; // nothing to score -> end branch silently
-  }
-
-  return [
-    {
+    return [{
       lead_id: leadContext.lead_id,
-      prompt: buildScoringPrompt(firmographics),
-    },
-  ];
+      scoring_required: false,
+      deterministic_qualification: false,
+      scoring_status: 'skipped',
+      status: 'skipped',
+      reason: 'duplicate_lead',
+    }];
+  }
+
+  const hasReliableOrganization = enriched.enrichment_status === 'matched'
+    && Boolean(
+      firmographics.company_name ||
+      firmographics.domain ||
+      firmographics.industry ||
+      firmographics.employee_count ||
+      firmographics.country ||
+      firmographics.company_description ||
+      firmographics.total_funding ||
+      firmographics.technologies
+    );
+
+  if (!hasReliableOrganization) {
+    return [{
+      lead_id: leadContext.lead_id,
+      scoring_required: false,
+      deterministic_qualification: true,
+      scoring_status: 'low_confidence',
+      enrichment_status: enriched.enrichment_status || 'not_found',
+      status: 'nurture',
+      reason: 'insufficient_firmographic_evidence',
+      firmographics,
+    }];
+  }
+
+  return [{
+    lead_id: leadContext.lead_id,
+    scoring_required: true,
+    deterministic_qualification: false,
+    scoring_status: 'pending',
+    enrichment_status: enriched.enrichment_status,
+    firmographics,
+    prompt: buildScoringPrompt(firmographics),
+  }];
 }

@@ -30,7 +30,6 @@ function environmentAdapter(
 
 export const CREDENTIAL_ADAPTERS = [
   environmentAdapter('none', 'mx', [], []),
-  environmentAdapter('hookdeck-signature', 'hookdeck', ['HOOKDECK_SIGNING_SECRET'], []),
   environmentAdapter('supabase-service-role', 'supabase', ['SUPABASE_SERVICE_ROLE_KEY'], [
     { name: 'apikey', valueExpression: '$env.SUPABASE_SERVICE_ROLE_KEY' },
     { name: 'Authorization', valueExpression: "'Bearer ' + $env.SUPABASE_SERVICE_ROLE_KEY" },

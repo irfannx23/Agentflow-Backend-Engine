@@ -14,7 +14,7 @@ function run(lead, score, leadId = 99) {
   global.$ = (nodeName) => {
     const map = {
       'Sanitize Lead': lead,
-      'Parse Gemini Score': score,
+      'Normalize Score Context': score,
       'Dedup: Get or Create Lead': { lead_id: leadId },
     };
     return { first: () => ({ json: map[nodeName] }) };
@@ -30,7 +30,7 @@ function check(name, got, expected) {
 }
 
 const lead = { email: 'founder@nebulaops.io', company_name: 'Nebula Ops', firmographics: { industry: 'SaaS', employees: 8 } };
-const score = { icp_score: 40, buying_intent: 'low', personalized_icebreaker: 'Curious how Nebula Ops handles data pipelines.' };
+const score = { icp_score: 40, fit: 'low', buying_intent: 'unknown', personalized_icebreaker: 'Curious how Nebula Ops handles data pipelines.' };
 
 const out = run(lead, score);
 check('lead_id passthrough', out.lead_id, 99);

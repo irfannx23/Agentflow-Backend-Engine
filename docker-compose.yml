@@ -1,0 +1,115 @@
+name: agentflow-backend-engine
+
+services:
+  n8n:
+    image: docker.n8n.io/n8nio/n8n:2.34.5
+    container_name: agentflow_n8n
+    restart: always
+    environment:
+      N8N_HOST: "${N8N_HOST:-localhost}"
+      N8N_PORT: "5678"
+      N8N_PROTOCOL: "${N8N_PROTOCOL:-http}"
+      N8N_SECURE_COOKIE: "${N8N_SECURE_COOKIE:-false}"
+      N8N_BLOCK_ENV_ACCESS_IN_NODE: "${N8N_BLOCK_ENV_ACCESS_IN_NODE:-false}"
+      WEBHOOK_URL: "${WEBHOOK_URL:-http://localhost:5678}"
+      N8N_DISPATCH_SECRET: "${N8N_DISPATCH_SECRET:?N8N_DISPATCH_SECRET is required}"
+      SUPABASE_URL: "${SUPABASE_URL:?SUPABASE_URL is required}"
+      SUPABASE_SERVICE_ROLE_KEY: "${SUPABASE_SERVICE_ROLE_KEY:?SUPABASE_SERVICE_ROLE_KEY is required}"
+      EMAIL_VERIFY_API_KEY: "${EMAIL_VERIFY_API_KEY:?EMAIL_VERIFY_API_KEY is required}"
+      EMAIL_VERIFY_BASE_URL: "${EMAIL_VERIFY_BASE_URL:-https://api.emailable.com}"
+      ENRICH_API_KEY: "${ENRICH_API_KEY:?ENRICH_API_KEY is required}"
+      ENRICH_BASE_URL: "${ENRICH_BASE_URL:-https://api.apollo.io/api/v1/organizations/enrich}"
+      GEMINI_API_KEY: "${GEMINI_API_KEY:?GEMINI_API_KEY is required}"
+      GEMINI_ENDPOINT: "${GEMINI_ENDPOINT:-https://generativelanguage.googleapis.com/v1beta/models}"
+      GEMINI_MODEL: "${GEMINI_MODEL:?GEMINI_MODEL is required}"
+      HUBSPOT_ACCESS_TOKEN: "${HUBSPOT_ACCESS_TOKEN:?HUBSPOT_ACCESS_TOKEN is required}"
+      HUBSPOT_BASE_URL: "${HUBSPOT_BASE_URL:-https://api.hubapi.com}"
+      SLACK_WEBHOOK_URL: "${SLACK_WEBHOOK_URL:?SLACK_WEBHOOK_URL is required}"
+      BREVO_API_KEY: "${BREVO_API_KEY:?BREVO_API_KEY is required}"
+      BREVO_BASE_URL: "${BREVO_BASE_URL:-https://api.brevo.com}"
+      BREVO_SENDER_NAME: "${BREVO_SENDER_NAME:?BREVO_SENDER_NAME is required}"
+      BREVO_SENDER_EMAIL: "${BREVO_SENDER_EMAIL:?BREVO_SENDER_EMAIL is required}"
+    ports:
+      - "127.0.0.1:${N8N_PORT:-5678}:5678"
+    volumes:
+      - n8n_data:/home/node/.n8n
+    networks:
+      - agentflow-runtime
+    depends_on:
+      mx-service:
+        condition: service_healthy
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - "fetch('http://127.0.0.1:5678/healthz').then(r => { if (!r.ok) process.exit(1) }).catch(() => process.exit(1))"
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 20s
+
+  mx-service:
+    build:
+      context: .
+      dockerfile: integrations/mx-service/Dockerfile
+    container_name: agentflow_mx
+    restart: always
+    environment:
+      MX_SERVICE_PORT: "${MX_SERVICE_PORT:-9001}"
+    ports:
+      - "127.0.0.1:${MX_SERVICE_PORT:-9001}:${MX_SERVICE_PORT:-9001}"
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - "fetch('http://127.0.0.1:' + (process.env.MX_SERVICE_PORT || '9001') + '/health').then(r => { if (!r.ok) process.exit(1) }).catch(() => process.exit(1))"
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 5s
+    networks:
+      agentflow-runtime:
+        aliases:
+          - mx-service
+
+  litellm:
+    image: ghcr.io/berriai/litellm:v1.90.2
+    container_name: agentflow_litellm
+    restart: unless-stopped
+    environment:
+      DEEPSEEK_API_KEY: "${DEEPSEEK_API_KEY:-}"
+      DEEPSEEK_BASE_URL: "${DEEPSEEK_BASE_URL:-https://api.deepseek.com}"
+      DEEPSEEK_MODEL: "${DEEPSEEK_MODEL:-deepseek/deepseek-flash}"
+      LITELLM_MASTER_KEY: "${LITELLM_MASTER_KEY:?LITELLM_MASTER_KEY is required}"
+    command:
+      - --config
+      - /app/config.yaml
+      - --port
+      - "4000"
+    ports:
+      - "127.0.0.1:${LITELLM_PORT:-4000}:4000"
+    volumes:
+      - ./integrations/litellm/config.yaml:/app/config.yaml:ro
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://localhost:4000/health/liveliness')"
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+    networks:
+      - agentflow-runtime
+
+volumes:
+  n8n_data:
+    external: true
+    name: costpilot_n8n_data
+
+networks:
+  agentflow-runtime:
+    driver: bridge

@@ -15,3 +15,9 @@ The compiler rejects duplicate stages, missing explanations or sources, blank ev
 ## Qualification intelligence
 
 `buildQualificationIntelligence` preserves the RPC's fit score, priority score and tier, MQL/SQL/PQL status, CRM/outbound readiness, explanation, rule version, source runtime, and timestamp. Behavioral score, intent details, and confidence are exposed only when present in audited summary fields. Missing values remain `null` or empty.
+
+Signup scoring is AgentFlow ICP fit, not buying intent. Apollo organization data
+is normalized before Gemini; missing values are not fabricated. Gemini must
+return `buying_intent: "unknown"`, which is persisted as database `NULL`.
+MQL/SQL use firmographic and engagement evidence, while PQL remains reserved for
+later AgentFlow product behavior handled by RevOps.

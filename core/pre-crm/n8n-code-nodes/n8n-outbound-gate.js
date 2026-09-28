@@ -12,7 +12,7 @@
  *
  * Reads:
  *   $json (current item) = the MX sidecar response { domain, hasMx, records, error }
- *   $('Parse Gemini Score') = { icp_score, ... }
+ *   $('Normalize Score Context') = { icp_score, ... }
  *
  * Outputs: [{ outbound_gate: 'pass'|'fail', outbound_reason, icp_score }]
  * ============================================
@@ -20,7 +20,7 @@
 
 export default function outboundGate() {
   const mx = $json || {};
-  const score = $('Parse Gemini Score').first().json || {};
+  const score = $('Normalize Score Context').first().json || {};
   const icp = typeof score.icp_score === 'number' ? score.icp_score : 0;
 
   if (!mx.hasMx) {

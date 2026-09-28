@@ -71,9 +71,18 @@ check(
 );
 check(
   'enrichment call uses canonical ENRICH_API_KEY header',
-  String(enrichCall?.parameters?.headerParametersJson || '').includes("'X-Api-Key': $env.ENRICH_API_KEY"),
+  JSON.stringify(enrichCall?.parameters || {}).includes('x-api-key') &&
+    JSON.stringify(enrichCall?.parameters || {}).includes('$env.ENRICH_API_KEY'),
   true,
 );
+const scoringNode = inbound.nodes.find((node) => node.name === 'Score Lead (Gemini)');
+const scoringCall = inbound.nodes.find((node) => node.name === 'Call Gemini API');
+const scoreUpdate = inbound.nodes.find((node) => node.name === 'Update Lead Score');
+check('AgentFlow scoring prompt is active', String(scoringNode?.parameters?.jsCode || '').includes('lead qualification intelligence layer for AgentFlow'), true);
+check('signup buying intent is strictly unknown', JSON.stringify(scoringCall?.parameters || {}).includes("enum: ['unknown']"), true);
+check('old scoring assumptions absent', /CostPilot|CostPulse|tech stack maturity/i.test(String(scoringNode?.parameters?.jsCode || '')), false);
+check('Apollo no-match has deterministic branch', hasNode(inbound, 'Build Low-Confidence Qualification'), true);
+check('database intent persists as null at signup', String(scoreUpdate?.parameters?.bodyParametersJson || '').includes('p_buying_intent: null'), true);
 check(
   'HubSpot contact normalizer emits hubspot_contact_id',
   String(hubspotNormalize?.parameters?.jsCode || '').includes('hubspot_contact_id'),
@@ -106,6 +115,8 @@ check('reply workflow has Slack sync node', hasNode(reply, 'Reply Cron: Sales Sy
 check('reply workflow routes after qualification refresh', firstTarget(reply, 'Reply Cron: Evaluate Qualification'), 'Reply Cron: Route Lead to Sales');
 check('reply workflow marks CRM sync before Slack', firstTarget(reply, 'Reply Cron: Route Lead to Sales'), 'Reply Cron: Sales Sync CRM');
 check('reply workflow marks Slack sync after alert', firstTarget(reply, 'Reply Cron: Slack Alert'), 'Reply Cron: Sales Sync Slack');
+check('reply workflow completes polling only after Slack sync', firstTarget(reply, 'Reply Cron: Sales Sync Slack'), 'Reply Cron: Mark Processing Complete');
+check('reply workflow has no cross-row first() reference', JSON.stringify(reply).includes("$('Reply Cron: Split Rows').first()"), false);
 check('reply workflow retries get replied on transient failures', (() => {
   const node = reply.nodes.find((candidate) => candidate.name === 'Reply Cron: Get Replied');
   return Boolean(node && node.retryOnFail === true && node.maxTries === 3 && node.waitBetweenTries === 5000);

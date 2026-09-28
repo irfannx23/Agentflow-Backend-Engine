@@ -14,9 +14,10 @@
       "parameters": {
         "httpMethod": "POST",
         "path": "agentflow-revops-signals",
-        "responseMode": "onReceived",
+        "responseMode": "responseNode",
         "options": {}
-      }
+      },
+      "webhookId": "agentflow-revops-signals-webhook"
     },
     {
       "id": "manual-trigger",
@@ -28,6 +29,19 @@
         0
       ],
       "parameters": {}
+    },
+    {
+      "id": "validate-backend-dispatch",
+      "name": "RevOps: Validate Backend Dispatch Secret",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        160,
+        360
+      ],
+      "parameters": {
+        "jsCode": "const expected = String($env.N8N_DISPATCH_SECRET || '');\nconst headers = $json.headers || {};\nconst supplied = String(headers['x-agentflow-dispatch-secret'] || headers['X-AgentFlow-Dispatch-Secret'] || '');\nreturn [{ json: { ...$json, dispatch_authorized: Boolean(expected && supplied && supplied === expected) } }];\n"
+      }
     },
     {
       "id": "schedule-trigger",
@@ -63,15 +77,20 @@
         "requestMethod": "POST",
         "jsonParameters": true,
         "headerParametersJson": "={{ JSON.stringify({ apikey: $env.SUPABASE_SERVICE_ROLE_KEY, Authorization: 'Bearer ' + $env.SUPABASE_SERVICE_ROLE_KEY }) }}",
-        "bodyParametersJson": "={{ JSON.stringify({ p_source: 'n8n_revops_orchestration' }) }}",
+        "bodyParametersJson": "={{ JSON.stringify({ p_account_id: $json.account_id || null, p_source: $json.source || 'n8n_revops_orchestration' }) }}",
         "options": {
           "response": {
             "response": {
               "responseFormat": "json"
             }
-          }
+          },
+          "timeout": 30000
         }
-      }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000,
+      "onError": "stopWorkflow"
     },
     {
       "id": "require-scoped-account",
@@ -83,7 +102,7 @@
         80
       ],
       "parameters": {
-        "jsCode": "return [{ json: { scope: 'all_accounts', source: 'n8n_revops_orchestration' } }];\n"
+        "jsCode": "const envelope = $input.first()?.json || {};\nconst isWebhook = !!envelope.headers;\nconst payload = envelope.body && typeof envelope.body === 'object' ? envelope.body : envelope;\nconst accountId = payload.accountId || payload.account_id || payload.event?.metadata?.accountId || null;\nif (isWebhook && !accountId) throw new Error('revops_backend_dispatch_requires_account_id');\nreturn [{ json: { scope: accountId ? 'single_account' : 'all_accounts', account_id: accountId, signal_ids: Array.isArray(payload.signalIds) ? payload.signalIds : [], source: isWebhook ? 'agentflow_backend_event' : 'n8n_revops_orchestration' } }];\n"
       }
     },
     {
@@ -96,7 +115,7 @@
         80
       ],
       "parameters": {
-        "jsCode": "/**\n * Split generated RevOps signals.\n * Handles PostgREST's normal array response and emits one item per pending signal.\n * If nothing is actionable, emit one explicit no-op item so manual/scheduled runs\n * finish clearly instead of looking like a broken empty branch.\n */\n\nconst rawItems = typeof $input.all === 'function'\n  ? $input.all().map((item) => item.json)\n  : [$input.first()?.json];\nconst payload = rawItems.flatMap((raw) => Array.isArray(raw) ? raw : [raw]);\nconst currentProductSignalTypes = new Set([\n  'PQL_REACHED',\n  'UPGRADE_INTENT',\n  'SIGNIFICANT_USAGE_GROWTH',\n  'SUBSCRIPTION_ACTIVATED',\n  'ALLOWANCE_PRESSURE',\n  'BUDGET_PRESSURE',\n]);\nconst signals = payload.filter((row) =>\n  row &&\n  row.signal_key &&\n  row.status === 'pending' &&\n  row.account_id &&\n  currentProductSignalTypes.has(row.signal_type)\n);\n\nif (!signals.length) {\n  return [{ json: { actionable: false, status: 'no_actionable_signals', signal_count: 0 } }];\n}\n\nreturn signals.map((signal) => ({ json: { ...signal, actionable: true } }));\n"
+        "jsCode": "/**\n * Split generated RevOps signals.\n * Handles PostgREST's normal array response and emits one item per pending signal.\n * If nothing is actionable, emit one explicit no-op item so manual/scheduled runs\n * finish clearly instead of looking like a broken empty branch.\n */\n\nconst rawItems = typeof $input.all === 'function'\n  ? $input.all().map((item) => item.json)\n  : [$input.first()?.json];\nconst payload = rawItems.flatMap((raw) => Array.isArray(raw) ? raw : [raw]);\nconst currentProductSignalTypes = new Set([\n  'PQL_REACHED',\n  'UPGRADE_INTENT',\n  'SIGNIFICANT_USAGE_GROWTH',\n  'SUBSCRIPTION_ACTIVATED',\n  'ALLOWANCE_PRESSURE',\n  'BUDGET_PRESSURE',\n  'MEANINGFUL_INACTIVITY',\n  'HIGH_CHURN_RISK',\n  'ACCOUNT_AT_RISK',\n  'EXPANSION_CANDIDATE',\n]);\nconst signals = payload.filter((row) =>\n  row &&\n  row.signal_key &&\n  row.status === 'pending' &&\n  row.account_id &&\n  currentProductSignalTypes.has(row.signal_type)\n);\n\nif (!signals.length) {\n  return [{ json: { actionable: false, status: 'no_actionable_signals', signal_count: 0 } }];\n}\n\nreturn signals.map((signal) => ({ json: { ...signal, actionable: true } }));\n"
       }
     },
     {
@@ -150,9 +169,14 @@
             "response": {
               "responseFormat": "json"
             }
-          }
+          },
+          "timeout": 30000
         }
-      }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000,
+      "onError": "stopWorkflow"
     },
     {
       "id": "hubspot-create-deal",
@@ -168,15 +192,20 @@
         "requestMethod": "POST",
         "jsonParameters": true,
         "headerParametersJson": "={{ JSON.stringify({ Authorization: 'Bearer ' + $env.HUBSPOT_ACCESS_TOKEN }) }}",
-        "bodyParametersJson": "={{ JSON.stringify({ properties: { dealname: 'RevOps Signal — ' + (($('RevOps: Get Signal Detail').first().json[0] && $('RevOps: Get Signal Detail').first().json[0].account_name) || 'Account'), amount: '0', pipeline: 'default', dealstage: 'appointmentscheduled', description: 'Internal RevOps signal: ' + (($('RevOps: Get Signal Detail').first().json[0] && $('RevOps: Get Signal Detail').first().json[0].signal_type) || 'unknown') } }) }}",
+        "bodyParametersJson": "={{ JSON.stringify({ properties: { dealname: 'RevOps Signal \u2014 ' + (($('RevOps: Get Signal Detail').item.json[0] && $('RevOps: Get Signal Detail').item.json[0].account_name) || 'Account'), amount: '0', pipeline: 'default', dealstage: 'appointmentscheduled', description: 'Internal RevOps signal: ' + (($('RevOps: Get Signal Detail').item.json[0] && $('RevOps: Get Signal Detail').item.json[0].signal_type) || 'unknown') } }) }}",
         "options": {
           "response": {
             "response": {
               "responseFormat": "json"
             }
-          }
+          },
+          "timeout": 30000
         }
-      }
+      },
+      "retryOnFail": false,
+      "maxTries": 1,
+      "waitBetweenTries": 0,
+      "onError": "stopWorkflow"
     },
     {
       "id": "pql-sales-handoff",
@@ -192,15 +221,20 @@
         "requestMethod": "POST",
         "jsonParameters": true,
         "headerParametersJson": "={{ JSON.stringify({ apikey: $env.SUPABASE_SERVICE_ROLE_KEY, Authorization: 'Bearer ' + $env.SUPABASE_SERVICE_ROLE_KEY }) }}",
-        "bodyParametersJson": "={{ JSON.stringify({ p_signal_key: $('RevOps: Get Signal Detail').first().json[0].signal_key, p_lead_id: $('RevOps: Get Signal Detail').first().json[0].lead_id || null, p_signal_type: $('RevOps: Get Signal Detail').first().json[0].signal_type, p_trigger: 'pql_product_trigger' }) }}",
+        "bodyParametersJson": "={{ JSON.stringify({ p_signal_key: $('RevOps: Get Signal Detail').item.json[0].signal_key, p_lead_id: $('RevOps: Get Signal Detail').item.json[0].lead_id || null, p_signal_type: $('RevOps: Get Signal Detail').item.json[0].signal_type, p_trigger: 'pql_product_trigger' }) }}",
         "options": {
           "response": {
             "response": {
               "responseFormat": "json"
             }
-          }
+          },
+          "timeout": 30000
         }
-      }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000,
+      "onError": "stopWorkflow"
     },
     {
       "id": "claim-hubspot-step",
@@ -216,15 +250,20 @@
         "requestMethod": "POST",
         "jsonParameters": true,
         "headerParametersJson": "={{ JSON.stringify({ apikey: $env.SUPABASE_SERVICE_ROLE_KEY, Authorization: 'Bearer ' + $env.SUPABASE_SERVICE_ROLE_KEY }) }}",
-        "bodyParametersJson": "={{ JSON.stringify({ p_signal_key: $('RevOps: Get Signal Detail').first().json[0].signal_key, p_step: 'hubspot', p_workflow_execution_id: $execution.id }) }}",
+        "bodyParametersJson": "={{ JSON.stringify({ p_signal_key: $('RevOps: Get Signal Detail').item.json[0].signal_key, p_step: 'hubspot', p_workflow_execution_id: $execution.id }) }}",
         "options": {
           "response": {
             "response": {
               "responseFormat": "json"
             }
-          }
+          },
+          "timeout": 30000
         }
-      }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000,
+      "onError": "stopWorkflow"
     },
     {
       "id": "should-create-hubspot",
@@ -272,15 +311,20 @@
         "requestMethod": "POST",
         "jsonParameters": true,
         "headerParametersJson": "={{ JSON.stringify({ apikey: $env.SUPABASE_SERVICE_ROLE_KEY, Authorization: 'Bearer ' + $env.SUPABASE_SERVICE_ROLE_KEY }) }}",
-        "bodyParametersJson": "={{ JSON.stringify({ p_signal_key: $('RevOps: Get Signal Detail').first().json[0].signal_key, p_hubspot_deal_id: $('RevOps: HubSpot Create Signal Deal').first().json.id, p_workflow_execution_id: $execution.id }) }}",
+        "bodyParametersJson": "={{ JSON.stringify({ p_signal_key: $('RevOps: Get Signal Detail').item.json[0].signal_key, p_hubspot_deal_id: $('RevOps: HubSpot Create Signal Deal').item.json.id, p_workflow_execution_id: $execution.id }) }}",
         "options": {
           "response": {
             "response": {
               "responseFormat": "json"
             }
-          }
+          },
+          "timeout": 30000
         }
-      }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000,
+      "onError": "stopWorkflow"
     },
     {
       "id": "claim-slack-step",
@@ -296,15 +340,20 @@
         "requestMethod": "POST",
         "jsonParameters": true,
         "headerParametersJson": "={{ JSON.stringify({ apikey: $env.SUPABASE_SERVICE_ROLE_KEY, Authorization: 'Bearer ' + $env.SUPABASE_SERVICE_ROLE_KEY }) }}",
-        "bodyParametersJson": "={{ JSON.stringify({ p_signal_key: $('RevOps: Get Signal Detail').first().json[0].signal_key, p_step: 'slack', p_workflow_execution_id: $execution.id }) }}",
+        "bodyParametersJson": "={{ JSON.stringify({ p_signal_key: $('RevOps: Get Signal Detail').item.json[0].signal_key, p_step: 'slack', p_workflow_execution_id: $execution.id }) }}",
         "options": {
           "response": {
             "response": {
               "responseFormat": "json"
             }
-          }
+          },
+          "timeout": 30000
         }
-      }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000,
+      "onError": "stopWorkflow"
     },
     {
       "id": "should-send-slack",
@@ -352,15 +401,20 @@
         "url": "={{ $env.SLACK_WEBHOOK_URL }}",
         "sendBody": true,
         "specifyBody": "json",
-        "jsonBody": "={{ JSON.stringify({ text: 'RevOps signal: ' + ($('RevOps: Get Signal Detail').first().json[0].signal_type || 'unknown') + '\\nAccount: ' + ($('RevOps: Get Signal Detail').first().json[0].account_name || 'Unknown') + '\\nPriority: ' + ($('RevOps: Get Signal Detail').first().json[0].priority || 'medium') + '\\nOwner: ' + ($('RevOps: Get Signal Detail').first().json[0].internal_owner_name || 'Unassigned') + '\\nHubSpot deal: ' + ($('RevOps: Claim Slack Step').first().json[0].hubspot_deal_id || 'not_created') + '\\nInternal signal only — no outbound campaign was sent.' }) }}",
+        "jsonBody": "={{ JSON.stringify({ text: 'RevOps signal: ' + ($('RevOps: Get Signal Detail').item.json[0].signal_type || 'unknown') + '\\nAccount: ' + ($('RevOps: Get Signal Detail').item.json[0].account_name || 'Unknown') + '\\nPriority: ' + ($('RevOps: Get Signal Detail').item.json[0].priority || 'medium') + '\\nOwner: ' + ($('RevOps: Get Signal Detail').item.json[0].internal_owner_name || 'Unassigned') + '\\nHubSpot deal: ' + ($('RevOps: Claim Slack Step').item.json[0].hubspot_deal_id || 'not_created') + '\\nInternal signal only \u2014 no outbound campaign was sent.' }) }}",
         "options": {
           "response": {
             "response": {
               "responseFormat": "text"
             }
-          }
+          },
+          "timeout": 30000
         }
-      }
+      },
+      "retryOnFail": false,
+      "maxTries": 1,
+      "waitBetweenTries": 0,
+      "onError": "stopWorkflow"
     },
     {
       "id": "record-slack-step",
@@ -376,15 +430,20 @@
         "requestMethod": "POST",
         "jsonParameters": true,
         "headerParametersJson": "={{ JSON.stringify({ apikey: $env.SUPABASE_SERVICE_ROLE_KEY, Authorization: 'Bearer ' + $env.SUPABASE_SERVICE_ROLE_KEY }) }}",
-        "bodyParametersJson": "={{ JSON.stringify({ p_signal_key: $('RevOps: Get Signal Detail').first().json[0].signal_key, p_workflow_execution_id: $execution.id }) }}",
+        "bodyParametersJson": "={{ JSON.stringify({ p_signal_key: $('RevOps: Get Signal Detail').item.json[0].signal_key, p_workflow_execution_id: $execution.id }) }}",
         "options": {
           "response": {
             "response": {
               "responseFormat": "json"
             }
-          }
+          },
+          "timeout": 30000
         }
-      }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000,
+      "onError": "stopWorkflow"
     },
     {
       "id": "slack-already-complete",
@@ -431,13 +490,115 @@
         "requestMethod": "POST",
         "jsonParameters": true,
         "headerParametersJson": "={{ JSON.stringify({ apikey: $env.SUPABASE_SERVICE_ROLE_KEY, Authorization: 'Bearer ' + $env.SUPABASE_SERVICE_ROLE_KEY }) }}",
-        "bodyParametersJson": "={{ JSON.stringify({ p_signal_key: $('RevOps: Get Signal Detail').first().json[0].signal_key, p_status: 'completed', p_outcome_status: 'notified', p_outcome_notes: 'HubSpot internal deal created/reused and Slack alert sent/reused by Phase 7 RevOps workflow.', p_workflow_execution_id: $execution.id, p_hubspot_deal_id: $('RevOps: Claim Slack Step').first().json[0].hubspot_deal_id, p_slack_notified: true }) }}",
+        "bodyParametersJson": "={{ JSON.stringify({ p_signal_key: $('RevOps: Get Signal Detail').item.json[0].signal_key, p_status: 'completed', p_outcome_status: 'notified', p_outcome_notes: 'HubSpot internal deal created/reused and Slack alert sent/reused by Phase 7 RevOps workflow.', p_workflow_execution_id: $execution.id, p_hubspot_deal_id: $('RevOps: Claim Slack Step').item.json[0].hubspot_deal_id, p_slack_notified: true }) }}",
         "options": {
           "response": {
             "response": {
               "responseFormat": "json"
             }
-          }
+          },
+          "timeout": 30000
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000,
+      "onError": "stopWorkflow"
+    },
+    {
+      "id": "pql-signal-gate",
+      "name": "RevOps: PQL Handoff Required?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        1600,
+        80
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "cond-pql-handoff",
+              "leftValue": "={{ ['PQL_REACHED', 'UPGRADE_INTENT'].includes($json[0].signal_type) }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ]
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "if-dispatch-authorized",
+      "name": "RevOps: Backend Dispatch Authorized?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        240,
+        360
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "cond-dispatch-authorized",
+              "leftValue": "={{ $json.dispatch_authorized }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true"
+              }
+            }
+          ]
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "respond-dispatch-accepted",
+      "name": "RevOps: Respond Accepted",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.5,
+      "position": [
+        320,
+        360
+      ],
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ { status: 'accepted' } }}",
+        "options": {
+          "responseCode": 202
+        }
+      }
+    },
+    {
+      "id": "respond-dispatch-unauthorized",
+      "name": "RevOps: Respond Unauthorized",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.5,
+      "position": [
+        320,
+        500
+      ],
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ { error: 'unauthorized' } }}",
+        "options": {
+          "responseCode": 401
         }
       }
     }
@@ -447,7 +608,7 @@
       "main": [
         [
           {
-            "node": "RevOps: Dynamic Signal Scope",
+            "node": "RevOps: Validate Backend Dispatch Secret",
             "type": "main",
             "index": 0
           }
@@ -525,7 +686,7 @@
       "main": [
         [
           {
-            "node": "RevOps: PQL Sales Handoff",
+            "node": "RevOps: PQL Handoff Required?",
             "type": "main",
             "index": 0
           }
@@ -655,6 +816,64 @@
           }
         ],
         []
+      ]
+    },
+    "RevOps: Validate Backend Dispatch Secret": {
+      "main": [
+        [
+          {
+            "node": "RevOps: Backend Dispatch Authorized?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "RevOps: PQL Handoff Required?": {
+      "main": [
+        [
+          {
+            "node": "RevOps: PQL Sales Handoff",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "RevOps: Claim HubSpot Step",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "RevOps: Backend Dispatch Authorized?": {
+      "main": [
+        [
+          {
+            "node": "RevOps: Respond Accepted",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "RevOps: Respond Unauthorized",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "RevOps: Respond Accepted": {
+      "main": [
+        [
+          {
+            "node": "RevOps: Dynamic Signal Scope",
+            "type": "main",
+            "index": 0
+          }
+        ]
       ]
     }
   },

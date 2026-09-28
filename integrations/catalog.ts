@@ -3,15 +3,6 @@ import { LOCAL_SERVICE_POLICY, NON_IDEMPOTENT_WRITE_HTTP_POLICY, READ_HTTP_POLIC
 
 export const INTEGRATION_DEFINITIONS = [
   {
-    id: 'hookdeck', name: 'Hookdeck', description: 'Webhook ingress, delivery, and retry boundary.',
-    documentation: 'docs/integrations.md#hookdeck',
-    authentication: ['api-key', 'webhook'], credentialType: 'Hookdeck API key and signing secret',
-    supportedActions: [], supportedTriggers: ['webhook'], supportedWorkflows: ['pre-crm.lead-qualification'],
-    environmentVariables: ['HOOKDECK_API_KEY', 'HOOKDECK_SIGNING_SECRET', 'HOOKDECK_SOURCE_URL'],
-    secretEnvironmentVariables: ['HOOKDECK_API_KEY', 'HOOKDECK_SIGNING_SECRET'], credentialAdapterId: 'hookdeck-signature', defaultRuntimePolicy: READ_HTTP_POLICY,
-    validation: ['verify signatures when enabled', 'deduplicate delivery identifiers'],
-  },
-  {
     id: 'supabase', name: 'Supabase', description: 'Existing persistence and RPC platform for GTM and RevOps state.',
     documentation: 'docs/integrations.md#supabase',
     authentication: ['api-key', 'bearer'], credentialType: 'Supabase service credential',

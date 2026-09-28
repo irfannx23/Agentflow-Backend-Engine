@@ -1,6 +1,6 @@
-# Phase 2 Migration Status
+# Current Migration Status
 
-## Migrated without workflow optimization
+## Canonical and repository-controlled
 
 - Lead Qualification n8n workflow
 - Reply-to-Deal n8n workflow
@@ -9,21 +9,25 @@
 - Lead acquisition and outbound foundations
 - Qualification, routing, and retention contracts
 - MX and LiteLLM integration helpers
-- Legacy workflow tests and synthetic fixtures
+- Provider contract tests and synthetic fixtures
 
-## Adapted
+## Remediated
 
 - Repository and builder paths
-- Development credential identifiers replaced with configuration placeholders
-- Product-specific repository naming removed
-- Typed registries and validation boundaries added
+- Authenticated backend webhook gates and durable dispatch outbox
+- Provider request contracts, timeouts, and retry/error policy
+- AgentFlow-specific firmographic ICP scoring
+- Reply-to-Deal per-item linkage and recovery semantics
+- Scoped RevOps signals and PQL-only handoff
+- Deterministic builders and canonical JSON validation
 
-## Intentionally not migrated
+## Intentionally outside this repository
 
 - Product UI and APIs
 - Authentication and billing
-- Database migrations, seed data, and customer data
 - Product-specific telemetry prototypes
 - Production environment files
 
-Workflow optimization has not begun.
+Historical database objects remain documented and are not destructively removed.
+Production load, provider sandbox, and failure-injection validation remain hardening
+work; registry status therefore remains `degraded`, not `healthy`.

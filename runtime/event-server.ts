@@ -79,6 +79,12 @@ export function startEventServer(environment: NodeJS.ProcessEnv = process.env): 
   const port = Number(environment.ENGINE_PORT ?? 4310)
   if (!Number.isInteger(port) || port < 1 || port > 65_535) throw new Error('invalid_engine_port')
   const pipeline = new EventPipeline(new SupabaseIntelligenceStore(), new N8nWorkflowDispatcher(environment))
+  const retryTimer = setInterval(() => {
+    void pipeline.retryPendingDispatches().catch((error: unknown) => {
+      console.error('dispatch.retry.failed', { message: error instanceof Error ? error.message : 'unknown_error' })
+    })
+  }, 15_000)
+  retryTimer.unref()
   createServer(createEventRequestHandler({ pipeline, integrationSecret })).listen(port, '127.0.0.1', () => {
     console.info('event.server.started', { port, host: '127.0.0.1' })
   })

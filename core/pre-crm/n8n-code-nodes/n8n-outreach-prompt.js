@@ -8,7 +8,7 @@
  *
  * Reads:
  *   $('Sanitize Lead')            -> { email, name, role, company_name, email_domain }
- *   $('Parse Gemini Score')       -> { icp_score, ... }
+ *   $('Normalize Score Context')  -> { icp_score, fit, ... }
  *   $('Parse Enrichment')         -> { firmographics }
  *   $('Dedup: Get or Create Lead')-> { lead_id }
  *
@@ -20,7 +20,7 @@
 function buildOutreachPrompt(lead, score, firmographics) {
   const firmo = firmographics && typeof firmographics === 'object' ? firmographics : {};
   const industry = firmo.industry || 'your industry';
-  const size = firmo.employees || 'your size';
+  const size = firmo.employee_count || 'your size';
   const country = firmo.country || '';
   const name = lead.name || 'there';
   const role = lead.role || 'your team';
@@ -49,7 +49,7 @@ function buildOutreachPrompt(lead, score, firmographics) {
 
 export default function outreachPrompt() {
   const lead = $('Sanitize Lead').first().json;
-  const score = $('Parse Gemini Score').first().json;
+  const score = $('Normalize Score Context').first().json;
   const firmo = $('Parse Enrichment').first().json.firmographics || {};
   const leadId = $('Dedup: Get or Create Lead').first().json.lead_id;
   const prompt = buildOutreachPrompt(lead, score, firmo);

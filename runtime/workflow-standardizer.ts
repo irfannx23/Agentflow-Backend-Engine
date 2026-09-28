@@ -2,11 +2,16 @@ import type { N8nNode, N8nWorkflow, RuntimePolicy, WorkflowDefinition } from '..
 
 const IDEMPOTENT_RPC_NAMES = new Set([
   'claim_revops_signal_step',
+  'count_events_since',
+  'count_leads_by_ip_since',
   'evaluate_account_health',
   'evaluate_lead_qualification',
   'generate_revops_signals',
   'get_or_create_lead',
   'get_replied_outreach',
+  'record_revops_hubspot_step',
+  'record_revops_signal_outcome',
+  'record_revops_slack_step',
   'route_lead_to_sales',
   'upsert_revops_signal',
 ])
@@ -20,6 +25,7 @@ function retrySafe(node: N8nNode): boolean {
   if (methodFor(node) === 'GET') return true
   const url = node.parameters?.url
   if (typeof url !== 'string') return false
+  if (url.includes('/contacts/batch/upsert')) return true
   const rpc = /\/rpc\/([a-z0-9_]+)/i.exec(url)?.[1]
   return rpc ? IDEMPOTENT_RPC_NAMES.has(rpc) : false
 }

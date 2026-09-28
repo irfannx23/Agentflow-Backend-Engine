@@ -10,7 +10,8 @@
  *   GET /health             -> { ok: true }
  *   GET /mx?domain=acme.com -> { domain, hasMx, records, error, cached }
  *
- * Port from MX_SERVICE_PORT (default 9001). Start: `npm run mx:start`.
+ * Port from MX_SERVICE_PORT (default 9001). Build with `pnpm build`, then start
+ * the compiled service with `pnpm mx:start`.
  */
 import { createServer } from 'node:http';
 import { checkMx } from './mx-check.js';

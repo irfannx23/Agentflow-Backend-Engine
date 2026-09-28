@@ -1,11 +1,14 @@
 > LEGACY / HISTORICAL REFERENCE
 >
 > This document is not a current master project-memory file.
+> This page is an archived design record. Its URLs and provider/runtime details are
+> not deployment instructions. Canonical ingress is direct backend-to-n8n dispatch
+> authenticated with `N8N_DISPATCH_SECRET`; see `docs/architecture.md`.
 >
 > Current source of truth:
 > `CODEX.md`, `TASK.md`, `STATE.md`, `ARCHITECTURE.md`, `Docs/Architecture/API_SPEC.md`, `CHANGELOG.md`, `README.md`, `FILE_STRUCTURE.md`
 
-# ARCHITECTURE.md — Data Flow & the 7-Stage Qualification Gate
+# Archived Architecture — Data Flow & the 7-Stage Qualification Gate
 
 **Why this file is used:** The technical deep-dive into how data moves through the system. Defines the "Pass/Fail" logic for every gate so the RevOps pipeline stays hygienic. Source of truth: `gtmops_architecture_blueprint.pdf` (V2.0).
 
@@ -35,7 +38,7 @@ Webflow / Typeform / App Events
         │  pass → AI Scoring · fail → 'Disqualified'
         ▼
 [Stage 6] AI ICP & Intent Scoring (Gemini)             ✅ IMPLEMENTED + VERIFIED
-        │  gemini-2.5-flash (thinkingBudget 0) → icp_score/buying_intent/icebreaker
+        │  GEMINI_MODEL → icp_score/fit + signup intent unknown + evidence
         │  score ≥ 70 → status 'qualified' · < 70 → 'nurture'
         ▼
 [Module 4] Smart Routing & Speed-to-Lead               ✅ IMPLEMENTED + VERIFIED
@@ -90,8 +93,8 @@ Webflow / Typeform / App Events
 - **Fail:** stored, status `disqualified`, `lead.blocked.jurisdiction` timeline event — NEVER scored or CRM'd.
 
 ### Stage 6 — AI ICP & Intent Scoring (Gemini) ✅ IMPLEMENTED + VERIFIED
-- **What:** `Score Lead (Gemini)` Code node builds a strict-JSON prompt from firmographics → `Call Gemini API` HTTP node POSTs to `gemini-2.5-flash:generateContent` (`?key={{ $env.GEMINI_API_KEY }}`, `thinkingConfig.thinkingBudget: 0`) → `Parse Gemini Score` validates the response.
-- **Returns:** `icp_score` (0–100), `buying_intent` (high|medium|low), `personalized_icebreaker` → persisted via `update_lead_score` RPC + `lead.scored` timeline event.
+- **What:** `Score Lead (Gemini)` builds a strict-JSON prompt from normalized firmographics → `Call Gemini API` POSTs to `{GEMINI_ENDPOINT}/{GEMINI_MODEL}:generateContent` using the `x-goog-api-key` header → `Parse Gemini Score` validates the AgentFlow ICP response.
+- **Returns:** `icp_score` (0–100), `fit` (high|medium|low), `buying_intent` (`unknown` at signup), evidence, factual summary, and `personalized_icebreaker`. Database intent is persisted as `NULL` (unknown); the explicit AgentFlow contract is stored in the firmographic qualification audit object.
 - **Score ≥ 70:** status `qualified` → Module 4 promotes to HubSpot CRM. **Score < 70:** status `nurture`.
 - **Skips:** duplicate leads (never re-scored) and leads without firmographic signal.
 - **Status:** verified live — new lead scored end-to-end; all executions SUCCESS.
@@ -127,7 +130,7 @@ Plus **Dynamic Overflow Triage (HITL)**: if AEs are busy → AI Sales Rep handle
 | raw_payload | jsonb | original webhook body |
 | firmographics | jsonb | enrichment output (Stage 4) |
 | icp_score | integer | Stage 6 output |
-| buying_intent | text | Stage 6 output (high|medium|low) |
+| buying_intent | text | Nullable database representation; `NULL` means unknown at signup |
 | personalized_icebreaker | text | Stage 6 output |
 | status | text default 'new' | new / duplicate / unverified / disqualified / nurture / qualified |
 | created_at / updated_at | timestamptz | trigger keeps updated_at fresh |

@@ -5,6 +5,8 @@ import type { IntelligenceEngineResult } from './intelligence-engine.js'
 import { evaluateBackendIntelligence } from './intelligence-engine.js'
 import type { IntelligenceStore, StoredEvent } from './supabase-event-store.js'
 import type { WorkflowDispatcher, WorkflowDispatchResult } from './n8n-dispatcher.js'
+import { registrationEventToLeadPayload } from './lead-ingestion-adapter.js'
+import { WORKFLOW_DISPATCH_IDS, type WorkflowDispatchId } from './n8n-dispatcher.js'
 
 export type EventPipelineLogger = {
   info(stage: string, context: Readonly<Record<string, unknown>>): void
@@ -35,6 +37,36 @@ export class EventPipeline {
     private readonly dispatcher: WorkflowDispatcher,
     private readonly logger: EventPipelineLogger = console,
   ) {}
+
+  private async dispatchClaimed(eventId?: string): Promise<WorkflowDispatchResult[]> {
+    const claimed = await this.store.claimWorkflowDispatches(eventId)
+    const results: WorkflowDispatchResult[] = []
+    for (const item of claimed) {
+      if (!WORKFLOW_DISPATCH_IDS.includes(item.workflowId as WorkflowDispatchId)) {
+        await this.store.resolveWorkflowDispatch(item.id, {
+          succeeded: false,
+          permanent: true,
+          error: `unknown_workflow:${item.workflowId}`,
+        })
+        continue
+      }
+      const result = await this.dispatcher.dispatch(item.workflowId as WorkflowDispatchId, item.payload)
+      results.push(result)
+      const permanent = result.status === 'skipped'
+        || (typeof result.statusCode === 'number' && result.statusCode >= 400 && result.statusCode < 500 && result.statusCode !== 408 && result.statusCode !== 429)
+        || item.retryCount >= 7
+      await this.store.resolveWorkflowDispatch(item.id, {
+        succeeded: result.status === 'dispatched',
+        permanent,
+        error: result.reason ?? (result.statusCode ? `http_${result.statusCode}` : undefined),
+      })
+    }
+    return results
+  }
+
+  async retryPendingDispatches(): Promise<readonly WorkflowDispatchResult[]> {
+    return this.dispatchClaimed()
+  }
 
   async process(event: AgentFlowEvent): Promise<EventPipelineResult> {
     this.logger.info('event.incoming', { eventId: event.eventId, event: event.event })
@@ -77,14 +109,18 @@ export class EventPipeline {
         })
       : null
 
-    const dispatches: WorkflowDispatchResult[] = []
-    if (!stored.duplicate && actionableSignals.length > 0) {
-      dispatches.push(await this.dispatcher.dispatch('revops.signal-orchestration', {
+    const registrationLead = registrationEventToLeadPayload(event)
+    if (registrationLead) {
+      await this.store.enqueueWorkflowDispatch(event.eventId, 'pre-crm.lead-qualification', registrationLead)
+    }
+    if (actionableSignals.length > 0) {
+      await this.store.enqueueWorkflowDispatch(event.eventId, 'revops.signal-orchestration', {
         event,
         signalIds: actionableSignals.map((signal) => signal.definitionId),
         accountId: accountId ?? event.workspaceId,
-      }))
+      })
     }
+    const dispatches = await this.dispatchClaimed(event.eventId)
     this.logger.info('event.dispatch', { eventId: event.eventId, dispatches: dispatches.map((entry) => `${entry.workflowId}:${entry.status}`) })
     this.logger.info('event.completed', { eventId: event.eventId })
     return { event, stored, preCrm, intelligence, dispatches }

@@ -274,13 +274,9 @@ function resolveIngestionEventId(raw, lead) {
     lead.event_id,
     lead.eventId,
     lead.ingestion_event_id,
-    lead.hookdeck_event_id,
     raw.event_id,
     raw.eventId,
     raw.id,
-    raw.hookdeck_event_id,
-    headers['x-hookdeck-eventid'],
-    headers['x-hookdeck-event-id'],
     headers['x-event-id']
   );
   if (existing) return existing;
@@ -290,14 +286,14 @@ function resolveIngestionEventId(raw, lead) {
     submitted_at: lead.submitted_at || lead.timestamp || lead.created_at || raw.timestamp || null,
     payload: lead,
   });
-  return `cp_ingest_${stableHash(seed)}`;
+  return `af_ingest_${stableHash(seed)}`;
 }
 
 /**
  * Main entry point for the n8n Code node.
  */
 export default function sanitizeLead() {
-  // Hookdeck / n8n may wrap the payload in an envelope (headers/params/query/body);
+  // n8n may wrap the payload in an envelope (headers/params/query/body);
   // unwrap if present so we always operate on the lead object itself.
   const raw = $input.first().json;
   const lead = raw.body && typeof raw.body === 'object' ? raw.body : raw;

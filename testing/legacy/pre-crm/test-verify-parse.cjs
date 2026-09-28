@@ -2,7 +2,7 @@
 /**
  * Unit tests for the Stage 2 verification normalizer (parseVerifyResponse).
  * Extracts the REAL function from Automation/n8n/Code_Nodes/n8n-verify-parse.js and
- * runs it against simulated Hunter / ZeroBounce responses.
+ * runs it against the canonical Emailable response contract.
  */
 const fs = require('fs');
 const vm = require('vm');
@@ -28,25 +28,11 @@ const parseVerifyResponse = sandbox.parseVerifyResponse;
 
 const cases = [
   // [name, provider response, expected deliverable, expected verdict]
-  ['hunter deliverable',  { data: { status: 'valid', result: 'deliverable' } }, true, 'deliverable'],
-  ['hunter undeliverable',{ data: { status: 'invalid', result: 'undeliverable' } }, false, 'undeliverable'],
-  ['hunter risky',        { data: { status: 'risky', result: 'risky' } }, false, 'risky'],
-  ['zerobounce valid',    { status: 'valid' }, true, 'deliverable'],
-  ['zerobounce invalid',  { status: 'invalid', sub_status: 'mailbox_not_found' }, false, 'invalid'],
-  ['zerobounce catch-all',{ status: 'catch-all' }, false, 'catch-all'],
-  ['abstract deliverable',{ deliverability: 'DELIVERABLE', is_disposable_email: false, is_mx_found: true, is_smtp_valid: true }, true, 'deliverable'],
-  ['abstract undeliverable', { deliverability: 'UNDELIVERABLE', is_mx_found: false }, false, 'undeliverable'],
-  ['abstract risky',      { deliverability: 'RISKY' }, false, 'risky'],
-  ['abstract disposable', { deliverability: 'DELIVERABLE', is_disposable_email: true }, false, 'deliverable'],
-  ['mailboxlayer valid',  { format_valid: true, mx_found: true, smtp_check: true, catch_all: false, disposable: false }, true, 'deliverable'],
-  ['mailboxlayer catch-all', { format_valid: true, mx_found: true, smtp_check: false, catch_all: true, disposable: false }, false, 'unknown'],
-  ['mailboxlayer no-smtp', { format_valid: true, mx_found: false, smtp_check: false, catch_all: false, disposable: false }, false, 'unknown'],
   ['emailable deliverable', { state: 'deliverable', reason: 'accepted_email' }, true, 'deliverable'],
+  ['emailable wrapped deliverable', { data: { state: 'deliverable' } }, true, 'deliverable'],
   ['emailable undeliverable', { state: 'undeliverable', reason: 'invalid_domain' }, false, 'undeliverable'],
   ['emailable risky', { state: 'risky' }, false, 'risky'],
   ['emailable unknown', { state: 'unknown' }, false, 'unknown'],
-  ['empty response',      {}, false, 'unknown'],
-  ['null response',       null, false, 'unknown'],
 ];
 
 let pass = 0;
@@ -57,5 +43,18 @@ for (const [name, resp, expDel, expVerdict] of cases) {
   if (ok) pass++;
 }
 
-console.log(`\n${pass}/${cases.length} tests passed`);
-process.exit(pass === cases.length ? 0 : 1);
+for (const [name, response, message] of [
+  ['empty response', {}, 'emailable_response_missing_state'],
+  ['null response', null, 'emailable_response_missing_state'],
+  ['invalid state', { state: 'valid' }, 'emailable_response_invalid_state:valid'],
+]) {
+  let error = null;
+  try { parseVerifyResponse(response); } catch (caught) { error = caught; }
+  const ok = error && error.message === message;
+  console.log(`${ok ? 'PASS' : 'FAIL'}  ${name}: ${error?.message || 'no_error'}`);
+  if (ok) pass++;
+}
+
+const total = cases.length + 3;
+console.log(`\n${pass}/${total} tests passed`);
+process.exit(pass === total ? 0 : 1);

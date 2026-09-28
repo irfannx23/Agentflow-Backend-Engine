@@ -1,144 +1,162 @@
-/**
- * ============================================
- * Pre-CRM Engine — Gemini AI Scoring Module
- * ============================================
- * Sends enriched firmographic data to the Gemini API
- * and returns a structured scoring response.
- *
- * Tech stack (see .clinerules):
- *   * Gemini API for AI Scoring & Intelligence
- *   * Clean TypeScript for n8n custom code nodes
- *   * Security first: API key via process.env, never hardcoded
- *
- * Output shape:
- *   {
- *     icp_score: number,            // 0-100
- *     buying_intent: string,        // e.g. "high" | "medium" | "low"
- *     personalized_icebreaker: string
- *   }
- *
- * Usage in an n8n Code node (JavaScript mode):
- *   The n8n workflow uses embedded copies of this logic in
- *   supabase/snippets/n8n-gemini-score.js (prompt builder) and
- *   supabase/snippets/n8n-gemini-parse.js (response validator) —
- *   keep this standalone module in sync with those.
- *   const { scoreLeadWithGemini } = require('./src/gemini-scoring');
- * ============================================
- */
+/** AgentFlow signup ICP scoring through Gemini. */
 
-/** Gemini API endpoint (v1beta, generateContent). */
-const GEMINI_ENDPOINT =
-  process.env.GEMINI_ENDPOINT ||
-  'https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash-lite:generateContent';
+const DEFAULT_GEMINI_BASE = 'https://generativelanguage.googleapis.com/v1beta/models'
 
-/** Structured scoring result returned by Gemini. */
 export interface GeminiScore {
-  icp_score: number;
-  buying_intent: 'high' | 'medium' | 'low';
-  personalized_icebreaker: string;
+  icp_score: number
+  fit: 'high' | 'medium' | 'low'
+  buying_intent: 'unknown'
+  qualification_reason: string
+  company_summary: string
+  personalized_icebreaker: string
 }
 
-/** Enriched firmographic data used to score a lead. */
 export interface Firmographics {
-  company_name?: string;
-  industry?: string;
-  employees?: number;
-  tech_stack?: string[];
-  monthly_spend?: number;
-  [key: string]: unknown;
+  company_name?: string
+  domain?: string
+  industry?: string
+  industries?: string[]
+  employee_count?: number
+  country?: string
+  region?: string
+  city?: string
+  company_description?: string
+  founded_year?: number
+  total_funding?: number
+  latest_funding_stage?: string
+  latest_funding_round_date?: string
+  headcount_growth_6m?: number
+  headcount_growth_12m?: number
+  headcount_growth_24m?: number
+  technologies?: string[]
+  email_verification_status?: string
+  email_classification?: 'business' | 'personal'
+  acquisition_source?: string
+  auth_provider?: string
+  signup_event?: string
+  enrichment_provider?: 'apollo'
 }
 
-/** Build the prompt that instructs Gemini to score the lead. */
 export function buildScoringPrompt(firmographics: Firmographics): string {
   return [
-    'You are a B2B RevOps lead-scoring assistant.',
-    'Analyze the following enriched firmographic data for a prospective company.',
-    'Return a STRICT JSON object (no markdown, no commentary) with exactly these keys:',
-    '  - "icp_score": an integer from 0 to 100 representing how well the company fits our ICP.',
-    '  - "buying_intent": one of "high", "medium", or "low" based on signals like tech stack maturity and monthly spend.',
-    '  - "personalized_icebreaker": a short, professional, personalized opening message (max 2 sentences) referencing the company\'s tech stack and monthly spend.',
+    'You are the lead qualification intelligence layer for AgentFlow, an AI-powered workflow automation platform.',
     '',
-    'Firmographic data:',
+    'Evaluate the prospective organization using ONLY the firmographic and enrichment information supplied.',
+    '',
+    'AgentFlow is relevant to organizations that could benefit from:',
+    '- AI-powered workflow automation',
+    '- n8n/API/integration automation',
+    '- repetitive operational-process automation',
+    '- GTM/RevOps automation',
+    '- AI workflow generation/orchestration',
+    '- multi-system integration',
+    '',
+    'Assess company fit using available evidence such as industry, employee count, geography, organization description, growth or funding indicators, technologies only when explicitly supplied, and other supplied enrichment attributes.',
+    '',
+    'Return STRICT JSON with exactly these keys:',
+    '{"icp_score":0,"fit":"low","buying_intent":"unknown","qualification_reason":"","company_summary":"","personalized_icebreaker":""}',
+    '',
+    'Rules:',
+    '- icp_score must be an integer from 0 to 100.',
+    '- fit must be "high", "medium", or "low" and must agree with the score and evidence.',
+    '- buying_intent must be "unknown". Firmographic fit is not buying intent.',
+    '- qualification_reason must be a brief evidence-based explanation.',
+    '- company_summary must be brief and factual.',
+    '- personalized_icebreaker must be 1-2 professional sentences using known data only.',
+    '- Never invent missing information.',
+    '- Never infer budget, monthly spend, pain points, or purchase intent.',
+    '- Never invent technology usage. Mention technologies only when they appear in the supplied object.',
+    '- Missing enrichment must reduce confidence and fit rather than cause fabrication.',
+    '- Personal email domains without reliable organization enrichment are low-confidence and must not produce invented company data.',
+    '- No markdown and no commentary outside the JSON object.',
+    '',
+    'Normalized firmographic data:',
     JSON.stringify(firmographics, null, 2),
-    '',
-    'Respond with only the JSON object.',
-  ].join('\n');
+  ].join('\n')
 }
 
-/** Parse and validate the Gemini response into a GeminiScore. */
 export function parseGeminiResponse(raw: string): GeminiScore {
-  // Strip any markdown code fences if present.
-  const cleaned = raw
-    .replace(/```json/gi, '')
-    .replace(/```/g, '')
-    .trim();
-
-  const parsed = JSON.parse(cleaned) as Partial<GeminiScore>;
-
-  const icp_score = Number(parsed.icp_score);
-  const buying_intent = parsed.buying_intent;
-  const personalized_icebreaker = parsed.personalized_icebreaker;
-
+  const parsed = JSON.parse(raw.replace(/```json/gi, '').replace(/```/g, '').trim()) as Partial<GeminiScore>
+  const icpScore = Number(parsed.icp_score)
   if (
-    Number.isNaN(icp_score) ||
-    icp_score < 0 ||
-    icp_score > 100 ||
-    !['high', 'medium', 'low'].includes(buying_intent as string) ||
-    typeof personalized_icebreaker !== 'string'
-  ) {
-    throw new Error('Gemini returned an unexpected scoring shape.');
-  }
+    !Number.isInteger(icpScore)
+    || icpScore < 0
+    || icpScore > 100
+    || !['high', 'medium', 'low'].includes(String(parsed.fit))
+    || parsed.buying_intent !== 'unknown'
+    || typeof parsed.qualification_reason !== 'string'
+    || !parsed.qualification_reason.trim()
+    || typeof parsed.company_summary !== 'string'
+    || typeof parsed.personalized_icebreaker !== 'string'
+  ) throw new Error('gemini_response_unexpected_agentflow_icp_shape')
 
   return {
-    icp_score,
-    buying_intent: buying_intent as GeminiScore['buying_intent'],
-    personalized_icebreaker,
-  };
+    icp_score: icpScore,
+    fit: parsed.fit as GeminiScore['fit'],
+    buying_intent: 'unknown',
+    qualification_reason: parsed.qualification_reason.trim(),
+    company_summary: parsed.company_summary.trim(),
+    personalized_icebreaker: parsed.personalized_icebreaker.trim(),
+  }
 }
 
-/**
- * Score a lead by sending its firmographics to Gemini.
- * Returns the structured scoring result.
- */
-export async function scoreLeadWithGemini(
-  firmographics: Firmographics
-): Promise<GeminiScore> {
-  const apiKey = process.env.GEMINI_API_KEY;
-  if (!apiKey) {
-    throw new Error('GEMINI_API_KEY is not set in the environment.');
+export function extractGeminiText(data: {
+  promptFeedback?: { blockReason?: string }
+  candidates?: Array<{ finishReason?: string; content?: { parts?: Array<{ text?: string }> } }>
+}): string {
+  const finishReason = data.candidates?.[0]?.finishReason
+  if (data.promptFeedback?.blockReason || finishReason === 'SAFETY') {
+    throw new Error(`gemini_safety_block:${data.promptFeedback?.blockReason ?? finishReason}`)
   }
+  if (!data.candidates?.length) throw new Error('gemini_response_missing_candidates')
+  const text = data.candidates[0]?.content?.parts?.[0]?.text
+  if (!text) throw new Error(`gemini_response_missing_text:${finishReason ?? 'unknown'}`)
+  return text
+}
 
-  const prompt = buildScoringPrompt(firmographics);
-
-  const response = await fetch(`${GEMINI_ENDPOINT}?key=${apiKey}`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      contents: [
-        {
-          parts: [{ text: prompt }],
+export async function scoreLeadWithGemini(firmographics: Firmographics): Promise<GeminiScore> {
+  const apiKey = process.env.GEMINI_API_KEY
+  if (!apiKey) throw new Error('GEMINI_API_KEY is not set in the environment.')
+  const model = process.env.GEMINI_MODEL?.trim()
+  if (!model) throw new Error('GEMINI_MODEL is not set in the environment.')
+  const base = (process.env.GEMINI_ENDPOINT?.trim() || DEFAULT_GEMINI_BASE).replace(/\/$/, '')
+  const body = JSON.stringify({
+    contents: [{ parts: [{ text: buildScoringPrompt(firmographics) }] }],
+    generationConfig: {
+      temperature: 0.2,
+      maxOutputTokens: 768,
+      responseMimeType: 'application/json',
+      responseJsonSchema: {
+        type: 'object',
+        required: ['icp_score', 'fit', 'buying_intent', 'qualification_reason', 'company_summary', 'personalized_icebreaker'],
+        properties: {
+          icp_score: { type: 'integer', minimum: 0, maximum: 100 },
+          fit: { type: 'string', enum: ['high', 'medium', 'low'] },
+          buying_intent: { type: 'string', enum: ['unknown'] },
+          qualification_reason: { type: 'string' },
+          company_summary: { type: 'string' },
+          personalized_icebreaker: { type: 'string' },
         },
-      ],
-      generationConfig: {
-        temperature: 0.2,
-        maxOutputTokens: 512,
       },
-    }),
-  });
+    },
+  })
 
-  if (!response.ok) {
-    const errBody = await response.text();
-    throw new Error(`Gemini API error ${response.status}: ${errBody}`);
+  let response: Response | undefined
+  for (let attempt = 1; attempt <= 3; attempt += 1) {
+    response = await fetch(`${base}/${encodeURIComponent(model)}:generateContent`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'x-goog-api-key': apiKey },
+      body,
+      signal: AbortSignal.timeout(30_000),
+    })
+    if (response.ok || (response.status !== 429 && response.status < 500)) break
+    if (attempt < 3) await new Promise(resolve => setTimeout(resolve, attempt * 1_000))
   }
+  if (!response?.ok) throw new Error(`Gemini API error ${response?.status ?? 'network_failure'}`)
 
-  const data = (await response.json()) as {
-    candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }>;
-  };
-
-  const text = data.candidates?.[0]?.content?.parts?.[0]?.text;
-  if (!text) {
-    throw new Error('Gemini returned no text content.');
+  const data = await response.json() as {
+    promptFeedback?: { blockReason?: string }
+    candidates?: Array<{ finishReason?: string; content?: { parts?: Array<{ text?: string }> } }>
   }
-
-  return parseGeminiResponse(text);
+  return parseGeminiResponse(extractGeminiText(data))
 }

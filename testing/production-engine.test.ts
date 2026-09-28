@@ -8,7 +8,7 @@ import { CREDENTIAL_ADAPTERS, credentialHeaderExpression } from '../integrations
 import { READ_HTTP_POLICY } from '../integrations/runtime-policies.js'
 import { integrationRegistry, workflowRegistry } from '../registry/index.js'
 import { loadEnvironmentConfiguration, redactConfiguration } from '../runtime/config-loader.js'
-import { loadPortableWorkflow } from '../runtime/workflow-loader.js'
+import { loadPortableWorkflow, loadWorkflow } from '../runtime/workflow-loader.js'
 import { normalizePersistedRevOpsSignals } from '../runtime/signal-engine.js'
 import { withExecutionTelemetry } from '../runtime/observability.js'
 import { validateN8nWorkflow } from '../validators/n8n-workflow-validator.js'
@@ -60,6 +60,14 @@ test('portable workflows preserve topology and add runtime policies', async () =
       assert.equal(typeof node.retryOnFail, 'boolean', `${definition.id}:${node.name}`)
       assert.equal(typeof (node.parameters?.options as Record<string, unknown>).timeout, 'number', `${definition.id}:${node.name}`)
     }
+  }
+})
+
+test('canonical workflow JSON already contains importable runtime policies', async () => {
+  for (const definition of workflowRegistry.list()) {
+    const workflow = await loadWorkflow(definition)
+    const validation = validateN8nWorkflow(workflow, { requireRuntimePolicies: true })
+    assert.deepEqual(validation.errors, [], definition.id)
   }
 })
 

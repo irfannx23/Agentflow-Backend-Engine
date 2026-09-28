@@ -4,7 +4,7 @@ Phase 3 standardizes the extracted workflows without replacing their business lo
 
 ## Runtime model
 
-The JSON in `workflows/` remains the source of truth. `loadPortableWorkflow` creates a runtime copy and adds operational settings that are safe to derive: execution order, request timeout, explicit error behavior, and retries only for GET or allowlisted idempotent RPC operations. Non-idempotent provider writes are never automatically retried.
+The JSON in `workflows/` remains the source of truth and persists operational settings: execution order, request timeout, explicit error behavior, and retries only for GET, email-keyed contact upserts, or allowlisted idempotent RPC operations. `loadPortableWorkflow` verifies a normalized copy. Non-idempotent provider writes are never automatically retried.
 
 ## Workflow contract
 

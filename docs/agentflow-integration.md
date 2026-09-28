@@ -26,7 +26,7 @@ Server-to-server requests include `x-agentflow-timestamp` and `x-agentflow-signa
 - `GET /health` returns local service readiness.
 - `POST /v1/events` authenticates, validates, stores, evaluates, and dispatches a canonical event.
 
-The event is stored in the existing `product_events` table using `event_id`, `event_name`, `event_properties`, `event_source`, `event_trust_level`, `firebase_uid`, and `occurred_at`. Signal-capable dotted contract names are normalized to the existing underscore event vocabulary, while the original name is retained as `event_properties.contractEvent`. No migration or schema change is required.
+The event is stored in the existing `product_events` table using `event_id`, `event_name`, `event_properties`, `event_source`, `event_trust_level`, `firebase_uid`, and `occurred_at`. The persistence adapter uses the table's existing `web_app` source and `trusted` trust-level vocabulary, while retaining `integrationSource: "agentflow"` and the original contract name in `event_properties`. Signal-capable dotted contract names are normalized to the existing underscore event vocabulary. No migration or schema change is required.
 
 ## Signal flow
 
@@ -36,11 +36,16 @@ Product actions are normalized to existing runtime event names only when a real 
 
 | Workflow | Dispatch behavior |
 | --- | --- |
-| Lead Qualification | Existing `hookdeck-lead-ingest` webhook through `N8N_LEAD_QUALIFICATION_DISPATCH_URL`; product UI actions do not fabricate lead-ingestion events. |
+| Lead Qualification | Authenticated `agentflow-lead-qualification` webhook through `N8N_LEAD_QUALIFICATION_DISPATCH_URL`; only `user.registered` is adapted from AgentFlow, using real signup identity fields. |
 | Reply-to-Deal | Additive `agentflow-reply-to-deal` webhook through `N8N_REPLY_TO_DEAL_DISPATCH_URL`; the existing schedule remains authoritative. |
 | RevOps Signal Orchestration | Additive `agentflow-revops-signals` webhook; automatically dispatched when event evaluation produces runtime or persisted RevOps signals. |
 
-Dispatch URLs are configuration boundaries. The scheduled/manual workflows retain their original entry points and business topology; the integration adds only webhook entry nodes connected to the same first processing node. An unset URL produces an explicit `skipped` result.
+Dispatch URLs are configuration boundaries. Every backend-facing webhook validates
+`X-AgentFlow-Dispatch-Secret` before database or provider work. Scheduled/manual
+entry points remain available where applicable. An unset URL produces an explicit
+configuration failure rather than an unauthenticated fallback.
+
+`user.registered` is the sole authentication event adapted into Lead Qualification input. The adapter uses the canonical event ID for idempotency, requires the real registration email, marks the lead as `source: "agentflow_signup"` and `source_type: "inbound"`, and passes only available identity/event context in `raw_payload`. `user.logged_in` never creates a lead. The registration payload enters the existing webhook before Anti-Abuse Gate and Sanitize Lead, so no verification, deduplication, enrichment, qualification, or routing stage is bypassed.
 
 ## Local development
 

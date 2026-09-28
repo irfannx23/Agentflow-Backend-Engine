@@ -16,11 +16,13 @@ import type { AgentFlowProductEvent } from '../core/product-signals.js'
 import { signEventBody, verifyEventSignature } from '../runtime/event-authentication.js'
 import { EventPipeline, type EventPipelineLogger } from '../runtime/event-pipeline.js'
 import { createEventRequestHandler } from '../runtime/event-server.js'
+import { registrationEventToLeadPayload } from '../runtime/lead-ingestion-adapter.js'
 import type { WorkflowDispatcher, WorkflowDispatchId, WorkflowDispatchResult } from '../runtime/n8n-dispatcher.js'
-import type { IntelligenceStore, StoredEvent } from '../runtime/supabase-event-store.js'
+import { SupabaseIntelligenceStore, type IntelligenceStore, type StoredEvent, type WorkflowDispatchOutboxItem } from '../runtime/supabase-event-store.js'
 
 class MemoryStore implements IntelligenceStore {
   readonly events: AgentFlowEvent[] = []
+  readonly outbox = new Map<string, WorkflowDispatchOutboxItem & { status: 'pending' | 'processing' | 'succeeded' | 'permanent_failed' }>()
   async persistEvent(event: AgentFlowEvent): Promise<StoredEvent> {
     const duplicate = this.events.some((entry) => entry.eventId === event.eventId)
     if (!duplicate) this.events.push(event)
@@ -35,6 +37,21 @@ class MemoryStore implements IntelligenceStore {
   async evaluateQualification(): Promise<QualificationEvidence | undefined> { return undefined }
   async evaluateHealth(): Promise<CustomerHealthEvaluationResult | undefined> { return undefined }
   async generateRevOpsSignals(): Promise<readonly PersistedRevOpsSignal[]> { return [] }
+  async enqueueWorkflowDispatch(eventId: string, workflowId: string, payload: Readonly<Record<string, unknown>>): Promise<void> {
+    const key = `${eventId}:${workflowId}`
+    if (!this.outbox.has(key)) this.outbox.set(key, { id: key, eventId, workflowId, payload, retryCount: 0, status: 'pending' })
+  }
+  async claimWorkflowDispatches(eventId?: string): Promise<readonly WorkflowDispatchOutboxItem[]> {
+    return [...this.outbox.values()].filter((item) => item.status === 'pending' && (!eventId || item.eventId === eventId)).map((item) => {
+      item.status = 'processing'
+      item.retryCount += 1
+      return item
+    })
+  }
+  async resolveWorkflowDispatch(id: string, result: { succeeded: boolean; permanent: boolean }): Promise<void> {
+    const item = this.outbox.get(id)
+    if (item) item.status = result.succeeded ? 'succeeded' : result.permanent ? 'permanent_failed' : 'pending'
+  }
 }
 
 class MemoryDispatcher implements WorkflowDispatcher {
@@ -59,7 +76,11 @@ function event(name: AgentFlowEvent['event'], index: number): AgentFlowEvent {
     userId: 'firebase-user-1',
     projectId: name.startsWith('user.') ? null : 'project-1',
     workspaceId: 'workspace-1',
-    metadata: name === 'workflow.generated' ? { isFirst: true, nodeCount: 12 } : {},
+    metadata: name === 'workflow.generated'
+      ? { isFirst: true, nodeCount: 12 }
+      : name === 'user.registered'
+        ? { email: 'new.user@example.test', displayName: 'New User', provider: 'password' }
+        : {},
     source: 'agentflow',
     version: '1.0',
   }
@@ -83,6 +104,64 @@ test('event signatures authenticate the exact body and reject replayed or modifi
   assert.equal(verifyEventSignature({ body, timestamp, signature, secret, now: 1_790_496_000_000 }), true)
   assert.equal(verifyEventSignature({ body: `${body} `, timestamp, signature, secret, now: 1_790_496_000_000 }), false)
   assert.equal(verifyEventSignature({ body, timestamp, signature, secret, now: 1_790_496_400_001 }), false)
+})
+
+test('registration adapter maps only real signup fields into the existing lead contract', () => {
+  const payload = registrationEventToLeadPayload(event('user.registered', 1))
+  assert.ok(payload)
+  assert.equal(payload.email, 'new.user@example.test')
+  assert.equal(payload.name, 'New User')
+  assert.equal(payload.event_id, 'event-1')
+  assert.equal(payload.source, 'agentflow_signup')
+  assert.equal(payload.source_type, 'inbound')
+  assert.equal(payload.raw_payload.firebase_user_id, 'firebase-user-1')
+  assert.equal('firebaseCredential' in payload.raw_payload, false)
+  assert.equal('idToken' in payload.raw_payload, false)
+})
+
+test('registration dispatches Lead Qualification once, replay is suppressed, and login never dispatches it', async () => {
+  const store = new MemoryStore()
+  const dispatcher = new MemoryDispatcher()
+  const pipeline = new EventPipeline(store, dispatcher, new MemoryLogger())
+  const registration = event('user.registered', 1)
+  await pipeline.process(registration)
+  await pipeline.process(registration)
+  await pipeline.process(event('user.logged_in', 2))
+  const leadCalls = dispatcher.calls.filter((call) => call.workflowId === 'pre-crm.lead-qualification')
+  assert.equal(leadCalls.length, 1)
+  assert.equal(leadCalls[0]?.payload.email, 'new.user@example.test')
+})
+
+test('failed dispatch remains pending and a duplicate event safely retries without duplicate side effects', async () => {
+  const store = new MemoryStore()
+  let attempt = 0
+  const dispatcher: WorkflowDispatcher = {
+    async dispatch(workflowId) {
+      attempt += 1
+      return attempt === 1
+        ? { workflowId, status: 'failed', statusCode: 503, reason: 'temporary_failure' }
+        : { workflowId, status: 'dispatched', statusCode: 200 }
+    },
+  }
+  const pipeline = new EventPipeline(store, dispatcher, new MemoryLogger())
+  const registration = event('user.registered', 8)
+  const first = await pipeline.process(registration)
+  const replay = await pipeline.process(registration)
+  assert.equal(first.dispatches[0]?.status, 'failed')
+  assert.equal(replay.dispatches[0]?.status, 'dispatched')
+  assert.equal(store.events.length, 1)
+  assert.equal(store.outbox.size, 1)
+})
+
+test('registration dispatch tolerates missing optional profile fields', async () => {
+  const store = new MemoryStore()
+  const dispatcher = new MemoryDispatcher()
+  const pipeline = new EventPipeline(store, dispatcher, new MemoryLogger())
+  const registration = { ...event('user.registered', 3), metadata: { email: 'minimal@example.test' } }
+  await pipeline.process(registration)
+  assert.equal(dispatcher.calls.length, 1)
+  assert.equal(dispatcher.calls[0]?.workflowId, 'pre-crm.lead-qualification')
+  assert.equal('name' in dispatcher.calls[0]!.payload, false)
 })
 
 test('HTTP endpoint authenticates and receives an event before running the backend pipeline', async () => {
@@ -112,6 +191,24 @@ test('HTTP endpoint authenticates and receives an event before running the backe
   } finally {
     server.close()
     await once(server, 'close')
+  }
+})
+
+test('Supabase persistence adapts the canonical source to the existing product_events vocabulary', async () => {
+  const originalFetch = globalThis.fetch
+  let capturedBody: Record<string, unknown> | undefined
+  globalThis.fetch = async (_input, init) => {
+    capturedBody = JSON.parse(String(init?.body)) as Record<string, unknown>
+    return Response.json([{ id: 1 }], { status: 201 })
+  }
+  try {
+    const store = new SupabaseIntelligenceStore({ url: 'https://example.supabase.co', serviceRoleKey: 'placeholder-for-test' })
+    await store.persistEvent(event('user.logged_in', 1))
+    assert.equal(capturedBody?.event_source, 'web_app')
+    assert.equal(capturedBody?.event_trust_level, 'trusted')
+    assert.equal((capturedBody?.event_properties as Record<string, unknown>).integrationSource, 'agentflow')
+  } finally {
+    globalThis.fetch = originalFetch
   }
 })
 

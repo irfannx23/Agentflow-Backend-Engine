@@ -11,7 +11,7 @@
 import { promises as dns } from 'node:dns';
 
 const TTL_MS = 60 * 60 * 1000; // 1 hour
-const cache = new Map<string, { hasMx: boolean; at: number }>();
+const cache = new Map<string, { hasMx: boolean; error: string | null; at: number }>();
 let resolveMxImpl: typeof dns.resolveMx = dns.resolveMx;
 
 export interface MxResult {
@@ -26,22 +26,24 @@ export async function checkMx(domain: string): Promise<MxResult> {
   const d = (domain || '').toLowerCase().trim().replace(/^www\./, '');
   const hit = cache.get(d);
   if (hit && Date.now() - hit.at < TTL_MS) {
-    return { domain: d, hasMx: hit.hasMx, records: [], error: null, cached: true };
+    return { domain: d, hasMx: hit.hasMx, records: [], error: hit.error, cached: true };
   }
   try {
     const records = await resolveMxImpl(d);
-    const hasMx = records.length > 0;
-    cache.set(d, { hasMx, at: Date.now() });
+    const nullMx = records.some((record) => record.priority === 0 && (record.exchange === '.' || record.exchange === ''));
+    const hasMx = records.length > 0 && !nullMx;
+    const error = nullMx ? 'null_mx' : null;
+    cache.set(d, { hasMx, error, at: Date.now() });
     return {
       domain: d,
       hasMx,
       records: records.map((r) => `${r.priority} ${r.exchange}`),
-      error: null,
+      error,
       cached: false,
     };
   } catch (e: any) {
     // ENODATA / ENOTFOUND / EAI_AGAIN -> no usable MX -> treat as not deliverable
-    cache.set(d, { hasMx: false, at: Date.now() });
+    cache.set(d, { hasMx: false, error: e.code ?? String(e), at: Date.now() });
     return { domain: d, hasMx: false, records: [], error: e.code ?? String(e), cached: false };
   }
 }
